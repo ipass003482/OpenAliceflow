@@ -9,8 +9,8 @@
 > 本倉庫為 [TraderAlice/OpenAlice](https://github.com/TraderAlice/OpenAlice) 原始專案之個人非營利分支，僅供學習與開發使用。原始設計與實作之著作權歸原作者（OpenAlice Contributors）所有。本分支之修改內容詳見 git 歷史紀錄，並依原專案相同之 AGPL-3.0-only 授權條款散布，無任何營利行為。
 
 <p align="center">
-  <strong>Your one-person Wall Street.</strong><br>
-  OpenAlice turns coding agents into local trading agents by giving them a workspace, files, issues, market tools, and approval-gated trading primitives.
+  <strong>一個人的華爾街。</strong><br>
+  OpenAlice 為 coding agent 提供工作區、檔案、議題、市場工具與核准把關的交易原語，把它們變成在你本機運作的交易代理。
 </p>
 
 <p align="center">
@@ -22,36 +22,36 @@
 </p>
 
 > [!CAUTION]
-> **OpenAlice is experimental software in active development.** Many features and interfaces are incomplete and subject to breaking changes. The trading layer is especially beta. Do not use OpenAlice for live trading with real funds unless you fully understand and accept the risks involved. The authors provide no guarantees of correctness, reliability, profitability, or loss prevention.
+> **OpenAlice 是仍在密集開發中的實驗性軟體。** 許多功能與介面尚未完成，隨時可能出現破壞性變更，交易層尤其處於 beta 階段。除非你完全理解並接受相關風險，否則請勿將 OpenAlice 用於真實資金的實盤交易。作者不對正確性、可靠性、獲利能力或損失防範提供任何保證。
 
-## What is OpenAlice?
+## OpenAlice 是什麼？
 
-OpenAlice is a local trading workspace for coding agents.
+OpenAlice 是一個給 coding agent 使用的本機交易工作區。
 
-The core idea is simple: coding agents became useful quickly because software work already has a collaboration substrate. Code has git, issues, markdown docs, review workflows, linters, terminals, logs, and reproducible project folders. A coding agent can enter that world and immediately understand how to inspect, modify, review, and report work.
+核心想法很簡單：coding agent 之所以能快速變得有用，是因為軟體開發工作本來就有一套協作基礎——程式碼有 git、議題追蹤、markdown 文件、審查流程、linter、終端機、日誌和可重現的專案資料夾。coding agent 進入這個世界後，立刻就知道該如何檢視、修改、審查與回報工作。
 
-Trading usually does not have that shape. A trader may read news, browse charts, hold broker positions, and keep private notes, but the work is rarely organized as a collaborative system that a human and multiple AI agents can share.
+交易通常沒有這種形態。交易者會讀新聞、看圖表、持有券商部位、記私人筆記，但這些工作很少被組織成一個人類與多個 AI agent 可以共享的協作系統。
 
-OpenAlice tries to make trading agent-operable by mapping trading work onto the tools coding agents already understand:
+OpenAlice 試著把交易工作對應到 coding agent 已經理解的工具上，讓交易變得可被 agent 操作：
 
-- **Workspaces** - each serious task gets a directory, git repo, terminal session, and native agent CLI.
-- **Issues** - trading work becomes self-describing markdown tasks, similar to Linear tickets.
-- **Tracked entities** - assets, sectors, topics, theses, and people become an Obsidian-like memory graph.
-- **Inbox** - finished work is delivered as durable reports instead of disappearing into chat history.
-- **Market tools** - data, news, fundamentals, technical analysis, and trading account state are exposed through CLIs and local tools.
-- **Trading as Git** - optional account actions are staged, committed, reviewed, and pushed through an approval gate.
+- **工作區（Workspaces）**——每項正式任務都有自己的目錄、git 儲存庫、終端機工作階段與原生 agent CLI。
+- **議題（Issues）**——交易工作變成自我描述的 markdown 任務，類似 Linear 的工單。
+- **追蹤實體（Tracked entities）**——資產、板塊、主題、論點與人物構成類似 Obsidian 的記憶圖譜。
+- **收件匣（Inbox）**——完成的工作以持久化報告的形式送達，而不是消失在聊天紀錄裡。
+- **市場工具（Market tools）**——行情資料、新聞、基本面、技術分析與交易帳戶狀態，都透過 CLI 與本機工具開放使用。
+- **交易即 Git（Trading as Git）**——帳戶操作（可選）經過暫存、提交、審查，再透過核准關卡推送執行。
 
-OpenAlice does not replace Claude Code, Codex, opencode, Pi, or other coding agents. It gives them a trading-shaped place to work.
+OpenAlice 不是要取代 Claude Code、Codex、opencode、Pi 或其他 coding agent，而是給它們一個為交易而生的工作場所。
 
-## The Core Loop
+## 核心迴圈
 
-Start with read-only research. You do not need a broker account to get value from OpenAlice.
+從唯讀研究開始。不需要券商帳戶也能從 OpenAlice 獲得價值。
 
-1. **Ask Alice** for a market question, company overview, sector scan, or thesis check.
-2. **Track what should persist** as entities and `[[wikilinks]]`.
-3. **Create an issue** when the work should continue, recur, or be handed to an agent later.
-4. **Schedule the issue** by writing timing and instructions into the same markdown file.
-5. **Read the result in Inbox** when the agent has something worth showing you.
+1. **問 Alice**——市場問題、公司概覽、板塊掃描或論點檢驗。
+2. **追蹤該保留的東西**——用實體與 `[[wikilinks]]` 記下來。
+3. **建立議題**——當工作需要延續、重複執行或之後交給 agent 處理時。
+4. **排程議題**——把時程與指示直接寫進同一份 markdown 檔案。
+5. **在收件匣讀結果**——agent 有值得給你看的成果時會送到這裡。
 
 <table>
   <tr>
@@ -59,50 +59,50 @@ Start with read-only research. You do not need a broker account to get value fro
     <td><img src="docs/images/tracked.jpg" alt="OpenAlice Tracked Entities"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Issue Board</strong></td>
-    <td align="center"><strong>Tracked Entities</strong></td>
+    <td align="center"><strong>議題看板</strong></td>
+    <td align="center"><strong>追蹤實體</strong></td>
   </tr>
   <tr>
     <td><img src="docs/images/inbox.jpg" alt="OpenAlice Inbox"></td>
     <td><img src="docs/images/market.jpg" alt="OpenAlice Market tools"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Inbox</strong></td>
-    <td align="center"><strong>Market Tools</strong></td>
+    <td align="center"><strong>收件匣</strong></td>
+    <td align="center"><strong>市場工具</strong></td>
   </tr>
 </table>
 
-That loop is the main product surface today. A timer does not call a magic trading endpoint. It launches an agent against a self-describing workspace issue, using the same files, tools, memory, and reporting path an attended session uses.
+這個迴圈就是今天的主要產品介面。排程器不會呼叫什麼神奇的交易端點——它針對一份自我描述的工作區議題啟動 agent，使用的檔案、工具、記憶與回報路徑，跟你親自坐在旁邊時完全相同。
 
-## What You Get
+## 你會得到什麼
 
-| Surface | What it does |
+| 介面 | 功能 |
 | --- | --- |
-| **Workspaces** | Per-task git repositories with a persistent terminal running `claude`, `codex`, `grok`, `opencode`, `pi`, or `shell`. |
-| **Issue Board** | Markdown-backed work items with status, priority, assignee, comments, links, and optional schedule metadata. |
-| **Tracked Entities** | A durable graph for tickers, themes, sectors, people, risks, and theses. |
-| **Inbox** | A delivery surface for reports, scheduled run output, and agent status updates. |
-| **Market Data** | Equities, crypto, macro, fundamentals, symbol search, technical indicators, news, and RSS tools. |
-| **Unified Trading Account** | Optional beta account abstraction for brokers such as Alpaca, IBKR, Longbridge, and CCXT venues. |
-| **Trading as Git** | Stage, commit, review, and push account operations instead of letting an agent fire orders directly. |
+| **工作區** | 以任務為單位的 git 儲存庫，附一個持續運行 `claude`、`codex`、`grok`、`opencode`、`pi` 或 `shell` 的終端機。 |
+| **議題看板** | 以 markdown 為後端的工作項目，含狀態、優先級、負責人、留言、連結與可選的排程設定。 |
+| **追蹤實體** | 為股票代號、主題、板塊、人物、風險與論點建立的持久化圖譜。 |
+| **收件匣** | 報告、排程執行結果與 agent 狀態更新的送達介面。 |
+| **市場資料** | 股票、加密貨幣、總經、基本面、代號搜尋、技術指標、新聞與 RSS 工具。 |
+| **統一交易帳戶（UTA）** | 可選的 beta 帳戶抽象層，支援 Alpaca、IBKR、Longbridge、Futu（富途）與 CCXT 交易所等券商。 |
+| **交易即 Git** | 帳戶操作先暫存、提交、審查再推送執行，而不是讓 agent 直接下單。 |
 
-## Why Local?
+## 為什麼要本機執行？
 
-Trading involves private notes, account state, credentials, strategy, and real money. OpenAlice runs on your machine by default, stores state as files under `~/.openalice`, and keeps broker credentials sealed at rest.
+交易涉及私人筆記、帳戶狀態、憑證、策略與真金白銀。OpenAlice 預設在你自己的機器上執行，狀態以檔案形式存放在 `~/.openalice` 之下，券商憑證在靜態儲存時保持密封（sealed）。
 
-There is no Postgres or Redis to provision. Config, sessions, issues, inbox entries, workspace artifacts, news archives, and trading history are ordinary files and git repositories. That makes the system easier to inspect, back up, debug, patch, and reason about.
+不需要架設 Postgres 或 Redis。設定、工作階段、議題、收件匣項目、工作區產物、新聞封存與交易歷史，全都是普通的檔案和 git 儲存庫——這讓整個系統更容易檢視、備份、除錯、修補與推理。
 
-## Quick Start
+## 快速開始
 
-Pick the run path that matches your machine:
+依照你的機器選擇執行方式：
 
-- **macOS** - use the signed Apple Silicon or Intel desktop build: [macOS install](https://openalice.ai/docs/getting-started/install-macos).
-- **Windows** - choose the self-contained unsigned desktop beta or the source path: [Windows install](https://openalice.ai/docs/getting-started/install-windows).
-- **Linux, contributors, debugging** - use the source path: [Source & Dev](https://openalice.ai/docs/getting-started/developer-setup).
-- **Private SSH host or travel setup** - keep the browser local and run the Runtime remotely: [Remote quickstart](docs/remote-quickstart.md).
-- **Server or always-on machine** - use Docker Compose: [Docker deployment](https://openalice.ai/docs/deployment/docker).
+- **macOS**——使用已簽章的 Apple Silicon 或 Intel 桌面版：[macOS 安裝](https://openalice.ai/docs/getting-started/install-macos)。
+- **Windows**——選擇自帶依賴的未簽章桌面 beta 版，或走原始碼路徑：[Windows 安裝](https://openalice.ai/docs/getting-started/install-windows)。
+- **Linux、貢獻者、除錯**——走原始碼路徑：[原始碼與開發](https://openalice.ai/docs/getting-started/developer-setup)。
+- **私有 SSH 主機或旅行配置**——瀏覽器留在本機、Runtime 跑在遠端：[遠端快速開始](docs/remote-quickstart.md)。
+- **伺服器或常開機器**——使用 Docker Compose：[Docker 部署](https://openalice.ai/docs/deployment/docker)。
 
-The source path is still the best early-adopter path because it gives you logs and local code:
+原始碼路徑仍然是早期使用者的最佳選擇，因為你能拿到日誌和本地程式碼：
 
 ```bash
 git clone https://github.com/TraderAlice/OpenAlice.git
@@ -111,45 +111,44 @@ pnpm install
 pnpm dev
 ```
 
-Open the UI URL printed by the terminal, usually `http://localhost:5173`.
+打開終端機印出的 UI 網址，通常是 `http://localhost:5173`。
 
-The packaged desktop includes managed Pi; the Docker image pins Claude Code,
-Codex, opencode, and Pi. Both still need a model credential or supported CLI
-login. Source installs need at least one host agent CLI. OpenAlice runs the
-model loop inside that native runtime so you keep its conversation state,
-provider login, and tool behavior.
+打包的桌面版內建 managed Pi；Docker 映像釘選了 Claude Code、Codex、
+opencode 與 Pi 的版本。兩者仍需要一組模型憑證或支援的 CLI 登入。原始碼
+安裝則至少需要主機上有一個 agent CLI。OpenAlice 把模型迴圈放在那個原生
+執行環境裡跑，所以它的對話狀態、供應商登入與工具行為都得以保留。
 
-## Documentation
+## 文件
 
-The README is intentionally short. The real docs live at [openalice.ai/docs](https://openalice.ai/docs).
+README 刻意保持簡短，完整文件在 [openalice.ai/docs](https://openalice.ai/docs)。
 
-- [What is OpenAlice](https://openalice.ai/docs/getting-started/what-is-openalice) - the product model and current boundary.
-- [Quick Start](https://openalice.ai/docs/getting-started/quick-start) - your first research, tracking, issue, schedule, and Inbox loop.
-- [Installation Overview](https://openalice.ai/docs/getting-started/installation) - choose macOS, Windows, source, Docker, or remote access.
-- [Workspaces](https://openalice.ai/docs/workspaces/workspaces) - the directory, git, CLI, and file-backed substrate.
-- [Sessions & Collaboration](https://openalice.ai/docs/workspaces/sessions-and-collaboration) - durable Session identity, signatures, provenance, and attributable follow-up.
-- [Lifecycle & Offboarding](https://openalice.ai/docs/workspaces/lifecycle) - handoff, departed desks, restore, purge, and Session retirement.
-- [Workspace Automation](https://openalice.ai/docs/workspaces/automation) - scheduled runs through self-describing issues.
-- [Unified Trading Account](https://openalice.ai/docs/core-concepts/unified-trading-account) - the beta account layer and safety warnings.
-- [Trading as Git](https://openalice.ai/docs/core-concepts/trading-as-git) - staged, committed, approval-gated trading operations.
-- [Data & Credentials](https://openalice.ai/docs/deployment/data-and-credentials) - state layout, sealed credentials, ports, and backup.
+- [OpenAlice 是什麼](https://openalice.ai/docs/getting-started/what-is-openalice)——產品模型與目前的邊界。
+- [快速開始](https://openalice.ai/docs/getting-started/quick-start)——你的第一輪研究、追蹤、議題、排程與收件匣迴圈。
+- [安裝總覽](https://openalice.ai/docs/getting-started/installation)——選擇 macOS、Windows、原始碼、Docker 或遠端存取。
+- [工作區](https://openalice.ai/docs/workspaces/workspaces)——目錄、git、CLI 與檔案後端的基礎。
+- [工作階段與協作](https://openalice.ai/docs/workspaces/sessions-and-collaboration)——持久的 Session 身分、簽名、溯源與可歸責的後續追問。
+- [生命週期與離站](https://openalice.ai/docs/workspaces/lifecycle)——交接、離站桌面、還原、清除與 Session 退役。
+- [工作區自動化](https://openalice.ai/docs/workspaces/automation)——透過自我描述的議題排程執行。
+- [統一交易帳戶](https://openalice.ai/docs/core-concepts/unified-trading-account)——beta 帳戶層與安全警告。
+- [交易即 Git](https://openalice.ai/docs/core-concepts/trading-as-git)——暫存、提交、核准把關的交易操作。
+- [資料與憑證](https://openalice.ai/docs/deployment/data-and-credentials)——狀態佈局、密封憑證、連接埠與備份。
 
-## Project Status
+## 專案現況
 
-OpenAlice is useful today for research, issue-based work, tracked memory, scheduled reports, and Inbox delivery.
+OpenAlice 今天已可用於研究、議題式工作、追蹤記憶、排程報告與收件匣送達。
 
-Treat broker execution as beta infrastructure. Start with simulator, paper, demo, or testnet accounts. If you hit UTA errors, broker connection failures, or confusing execution behavior, bring the error to Discord or open a GitHub issue so we can reproduce it.
+請把券商下單視為 beta 基礎設施。從模擬器、paper、demo 或 testnet 帳戶開始。若遇到 UTA 錯誤、券商連線失敗或令人困惑的執行行為，請把錯誤帶到 Discord 或開 GitHub issue，讓我們能重現問題。
 
-## Getting Help
+## 尋求協助
 
-Stuck? The fastest path is usually:
+卡住了？最快的路徑通常是：
 
-1. **Ask an AI coding agent to inspect the repo** - OpenAlice is intentionally file-backed and agent-readable.
-2. **Read the docs** - [openalice.ai/docs](https://openalice.ai/docs).
-3. **Ask DeepWiki** - [deepwiki.com/TraderAlice/OpenAlice](https://deepwiki.com/TraderAlice/OpenAlice).
-4. **Join the community** - [Discord](https://discord.gg/zf4STmrQd8) for English speakers, [QQ group](https://qm.qq.com/q/iSg6O4FmrC) for 中文开发者.
+1. **請 AI coding agent 檢查這個儲存庫**——OpenAlice 刻意採用檔案後端、對 agent 友善可讀的設計。
+2. **閱讀文件**——[openalice.ai/docs](https://openalice.ai/docs)。
+3. **問 DeepWiki**——[deepwiki.com/TraderAlice/OpenAlice](https://deepwiki.com/TraderAlice/OpenAlice)。
+4. **加入社群**——英文使用者請上 [Discord](https://discord.gg/zf4STmrQd8)，中文開發者請加 [QQ 群](https://qm.qq.com/q/iSg6O4FmrC)。
 
-## Star History
+## Star 歷史
 
 <p align="center">
   <a href="https://github.com/TraderAlice/OpenAlice">
@@ -164,12 +163,11 @@ Stuck? The fastest path is usually:
   <a href="https://github.com/TraderAlice/OpenAlice"><img src="https://img.shields.io/github/stars/TraderAlice/OpenAlice?style=flat-square&logo=github&label=Current%20stars" alt="Current GitHub stars"></a>
 </p>
 
-## Contributors
+## 貢獻者
 
-OpenAlice is sharper for the people who dig into it with us: the bugs they
-catch, the ideas they push, the UX edges they notice, the designs and reviews
-they bring. High-signal issues and PR proposals count here. If a report,
-suggestion, or implementation proposal changes the product, it gets credited.
+OpenAlice 因為那些跟我們一起深入鑽研的人而變得更鋒利：他們抓到的 bug、
+推動的想法、注意到的 UX 邊角、帶來的設計與審查。高訊號的 issue 和 PR
+提案都算在內——只要一份報告、建議或實作提案改變了產品，就會被記上一筆。
 
 <!-- Standouts first. Avatars come free from https://github.com/<handle>.png -->
 <p>
@@ -185,8 +183,8 @@ suggestion, or implementation proposal changes the product, it gets credited.
   <a href="https://github.com/enderzcx"><img src="https://github.com/enderzcx.png" width="56" height="56" alt="@enderzcx" /></a>
 </p>
 
-**See the full list and what each person shaped**: [CONTRIBUTORS.md](./CONTRIBUTORS.md)
+**完整名單與每個人的貢獻**：[CONTRIBUTORS.md](./CONTRIBUTORS.md)
 
-## License
+## 授權
 
 [AGPL-3.0](LICENSE)
