@@ -4,6 +4,10 @@
 
 <h1 align="center">OpenAlice</h1>
 
+> [!NOTE]
+> **Fork notice / 分支聲明**: This repository (`ipass003482/OpenAliceflow`) is a personal, non-commercial fork of the original project [TraderAlice/OpenAlice](https://github.com/TraderAlice/OpenAlice), created and maintained by the OpenAlice Contributors. All credit for the original design and implementation belongs to the upstream authors. This fork contains local modifications (see git history) and is distributed under the same [AGPL-3.0-only](LICENSE) license as the original. No profit is made from this fork.
+> 本倉庫為 [TraderAlice/OpenAlice](https://github.com/TraderAlice/OpenAlice) 原始專案之個人非營利分支，僅供學習與開發使用。原始設計與實作之著作權歸原作者（OpenAlice Contributors）所有。本分支之修改內容詳見 git 歷史紀錄，並依原專案相同之 AGPL-3.0-only 授權條款散布，無任何營利行為。
+
 <p align="center">
   <strong>Your one-person Wall Street.</strong><br>
   OpenAlice turns coding agents into local trading agents by giving them a workspace, files, issues, market tools, and approval-gated trading primitives.

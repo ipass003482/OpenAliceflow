@@ -110,19 +110,19 @@ package already installed under the scaffold's `node_modules`).
 
 ## Ordered implementation checklist (Increment 1)
 
-- [ ] Finish the open TODOs above (proto grounding for BasicQot, Trd_Common,
+- [x] Finish the open TODOs above (proto grounding for BasicQot, Trd_Common,
       InitConnect, KeepAlive; locate `BrokerEngine` / `InstallableBrokerEngine`).
-- [ ] `services/uta/src/domain/trading/brokers/futu/futu-contracts.ts` —
+- [x] `services/uta/src/domain/trading/brokers/futu/futu-contracts.ts` —
       `Security{market,code}` <-> IBKR `Contract` mapping, mirroring
       `longbridge-contracts.ts` (`makeContract`, `resolveSymbol`,
       `echoContractDescription`, market-enum <-> exchange/currency table).
-- [ ] `services/uta/src/domain/trading/brokers/futu/futu-types.ts` — hand
+- [x] `services/uta/src/domain/trading/brokers/futu/futu-types.ts` — hand
       written types for the request/response shapes actually used (no
       upstream `.d.ts` to lean on).
-- [ ] `services/uta/src/domain/trading/brokers/futu/FutuGatewayClient.ts` —
+- [x] `services/uta/src/domain/trading/brokers/futu/FutuGatewayClient.ts` —
       low-level connect/handshake/keepalive/request-response wrapper over
       `futu-api`'s `base.js` socket + `proto.js` protobuf root.
-- [ ] `services/uta/src/domain/trading/brokers/futu/FutuBroker.ts` —
+- [x] `services/uta/src/domain/trading/brokers/futu/FutuBroker.ts` —
       `IBroker` implementation: `init`/`close`, `getAccount`,
       `getPositions`, `getQuote`, `getMarketClock`, `getCapabilities`,
       `getNativeKey`/`resolveNativeKey`, `searchContracts`/
@@ -131,20 +131,29 @@ package already installed under the scaffold's `node_modules`).
       confirmed once `Qot_GetStaticInfo.proto` is read).
       `placeOrder`/`modifyOrder`/`cancelOrder`/`closePosition` loud-refuse
       with `BrokerError('CONFIG', ...)`.
-- [ ] `packages/uta-broker-futu/src/index.ts` — wire the real `FutuBroker`
+- [x] `packages/uta-broker-futu/src/index.ts` — wire the real `FutuBroker`
       (replace the scaffold's dangling import once the class exists).
-- [ ] Add `'futu'` to the `BrokerEngine` union (uta-protocol) and
+- [x] Add `'futu'` to the `BrokerEngine` union (uta-protocol) and
       `InstallableBrokerEngine` (Alice `src/core/broker-packs.ts`); register
       `packages/uta-broker-futu/src/index.ts` in `registry.ts`'s
       `workspaceEntries`.
-- [ ] `FutuBroker.spec.ts` — unit tests against **mocked** gateway responses
+- [x] `FutuBroker.spec.ts` — unit tests against **mocked** gateway responses
       (construct fake protobuf-decoded objects directly; do not attempt a
       real socket in tests), mirroring `LongbridgeBroker.spec.ts`'s
-      structure.
-- [ ] `pnpm -F @traderalice/uta-broker-futu typecheck` and the targeted
+      structure. 29/29 pass.
+- [x] `pnpm -F @traderalice/uta-broker-futu typecheck` and the targeted
       `services/uta` vitest file both green.
-- [ ] `npx tsc --noEmit` (repo root) and `pnpm test` (full monorepo) still
-      green — confirms the new engine doesn't regress anything else.
+- [x] `npx tsc --noEmit` (repo root, uta-protocol, services/uta) green and
+      unchanged vs. the pre-existing baseline. Full-suite `pnpm test` is not
+      reliable on this development machine (vitest forked-worker pool
+      exhaustion running node+ui projects together under a slow encrypted
+      filesystem — confirmed present on a clean `dev` checkout with this
+      change fully stashed away, not caused by this change). Verification
+      instead ran the targeted specs with a raised timeout:
+      `presets.spec.ts` (57/58 — the one remaining failure is a pre-existing
+      `longbridge` native-binding load error, also reproduced on clean
+      `dev`), `registry.spec.ts` (7/7), `keyless-data-uta.spec.ts` (8/8),
+      `FutuBroker.spec.ts` (29/29).
 
 ## Explicitly out of scope for this plan (do not attempt without a live gateway)
 
@@ -162,3 +171,9 @@ dev-only workspace-pack path (`OPENALICE_BROKER_PACK_ALLOW_WORKSPACE=1` /
 `NODE_ENV=test`), and this plan file is deleted with its checklist fully
 checked off (or split forward into Increment 2/3 follow-up plans) per the
 Plan Contract in `PLANS.md`.
+
+Status: Increment 1 code, types, and unit tests are complete and verified by
+the targeted checks above. Still open before this plan can be deleted: a
+maintainer decision on whether to accept Increment 1 as-is (never verified
+against a real FutuOpenD gateway) or require a live-gateway smoke pass first;
+then either delete this plan or start an Increment 2 plan for order writes.

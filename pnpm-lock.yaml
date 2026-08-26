@@ -348,6 +348,9 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@types/node':
+        specifier: ^22.13.4
+        version: 22.19.15
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.6.1)(postcss@8.5.25)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -552,6 +555,9 @@ importers:
       ccxt:
         specifier: ^4.5.38
         version: 4.5.38
+      futu-api:
+        specifier: ^10.10.7008
+        version: 10.10.7008
       longbridge:
         specifier: ^4.0.5
         version: 4.0.5

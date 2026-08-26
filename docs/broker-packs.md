@@ -35,7 +35,7 @@ Pack API version 1 exports:
 
 ```ts
 BROKER_PACK_API_VERSION: 1
-BROKER_ENGINE: 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge'
+BROKER_ENGINE: 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu'
 configSchema: ZodType
 createBroker(config): IBroker
 ```

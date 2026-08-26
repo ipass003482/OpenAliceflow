@@ -15,7 +15,7 @@ import { createHash, randomBytes } from 'node:crypto'
 
 // ==================== Types ====================
 
-export type BrokerEngine = 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'mock'
+export type BrokerEngine = 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu' | 'mock'
 
 export interface ModeOption {
   id: string
