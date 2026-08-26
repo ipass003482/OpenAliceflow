@@ -77,3 +77,7 @@ the durable truth after it changes. Git history is the archive.
   in `dev`; remaining work is the TypeScript CLI conversion, logs/Doctor/update
   UX, config check, registry deletion, authenticity-hardened updates, and
   release-gate N-1.
+- [[plans/uta-broker-futu.md]] — Read-only Futu (富途) Broker Pack.
+  Proto-level grounding (Qot_Common Security/QotMarket, ftCmdID table) is
+  recorded; `FutuGatewayClient`/`FutuBroker` implementation has not started.
+  No FutuOpenD gateway or Futu account is available for live verification.
