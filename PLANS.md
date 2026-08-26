@@ -81,3 +81,9 @@ the durable truth after it changes. Git history is the archive.
   Proto-level grounding (Qot_Common Security/QotMarket, ftCmdID table) is
   recorded; `FutuGatewayClient`/`FutuBroker` implementation has not started.
   No FutuOpenD gateway or Futu account is available for live verification.
+- [[plans/futu-realtime-quotes.md]] — Genuine push-based live quotes for
+  Futu, layered on top of the read-only pack above. No push/subscribe
+  primitive exists anywhere in `IBroker`/`BarService` today; this is a
+  5-layer project (FutuGateway/FutuBroker → `IBroker` contract → UTA HTTP →
+  Alice webui relay → "Market" UI). Increment 1 (FutuGateway/FutuBroker
+  subscription) is done (41/41 tests); increments 2–5 are unstarted.

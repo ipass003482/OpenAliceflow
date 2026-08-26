@@ -76,6 +76,22 @@ const defaultGatewayFactory: FutuGatewayFactory = async (config) => {
   return new FutuGatewayClient(config)
 }
 
+/**
+ * Live basic-quote push shape (see `FutuBroker.subscribeQuote`). Deliberately
+ * NOT `Quote` — no bid/ask, since `Qot_UpdateBasicQot` doesn't carry them.
+ */
+export interface FutuBasicQuoteUpdate {
+  contract: Contract
+  last: string
+  high: string
+  low: string
+  open: string
+  lastClose: string
+  volume: string
+  turnover: string
+  timestamp: Date
+}
+
 export class FutuBroker implements IBroker {
   // ---- Self-registration ----
 
@@ -288,6 +304,43 @@ export class FutuBroker implements IBroker {
       low: dec(b.lowPrice),
       // updateTimestamp is epoch seconds (proto: 更新时间戳).
       timestamp: b.updateTimestamp ? new Date(b.updateTimestamp * 1000) : new Date(),
+    }
+  }
+
+  /**
+   * Live basic-quote push (Qot_Sub SubType_Basic → Qot_UpdateBasicQot).
+   *
+   * NOT part of `IBroker` yet — see plans/futu-realtime-quotes.md Increment 1.
+   * Deliberately returns a distinct `FutuBasicQuoteUpdate` shape rather than
+   * `Quote`: the underlying `BasicQot` push message carries no bid/ask (that
+   * lives behind the separate order-book subscription, out of scope here),
+   * so forcing it into `Quote`'s required bid/ask fields would fabricate
+   * data that was never actually pushed.
+   */
+  async subscribeQuote(
+    contract: Contract,
+    onUpdate: (update: FutuBasicQuoteUpdate) => void,
+  ): Promise<() => Promise<void>> {
+    const key = resolveFutuKey(contract)
+    if (!key) throw new BrokerError('EXCHANGE', 'Cannot resolve contract to a Futu market/code key')
+    try {
+      return await this.gateway.subscribeBasicQuote([keyToSecurity(key)], (rows) => {
+        for (const b of rows) {
+          onUpdate({
+            contract: makeContract(key),
+            last: dec(b.curPrice),
+            high: dec(b.highPrice),
+            low: dec(b.lowPrice),
+            open: dec(b.openPrice),
+            lastClose: dec(b.lastClosePrice),
+            volume: new Decimal(String(b.volume ?? 0)).toString(),
+            turnover: dec(b.turnover),
+            timestamp: b.updateTimestamp ? new Date(b.updateTimestamp * 1000) : new Date(),
+          })
+        }
+      })
+    } catch (err) {
+      throw BrokerError.from(err)
     }
   }
 

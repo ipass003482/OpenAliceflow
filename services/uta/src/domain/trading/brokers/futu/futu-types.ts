@@ -35,6 +35,9 @@ export const FutuTrdSecMarket = { HK: 1, US: 2, SH: 31, SZ: 32, SG: 41, JP: 51 }
 /** Trd_Common.PositionSide */
 export const FutuPositionSide = { Long: 0, Unknown: -1, Short: 1 } as const
 
+/** Qot_Common.SubType (subset used by this adapter). */
+export const FutuSubType = { Basic: 1 } as const
+
 /** Trd_Common.Currency — enum value to ISO-style code. */
 export const FUTU_CURRENCY_CODES: Record<number, string> = {
   1: 'HKD', 2: 'USD', 3: 'CNH', 4: 'JPY', 5: 'SGD', 6: 'AUD', 7: 'CAD', 8: 'MYR', 9: 'NZD',
@@ -135,6 +138,27 @@ export interface FutuSnapshotLike {
   basic: FutuSnapshotBasicLike
 }
 
+/**
+ * Qot_Common.BasicQot (subset consumed from Qot_UpdateBasicQot push).
+ * Distinct from FutuSnapshotBasicLike — the "basic quote" message pushed by
+ * Qot_Sub's SubType_Basic does NOT carry bid/ask (those live on the order
+ * book message behind SubType_OrderBook, out of scope for this increment).
+ */
+export interface FutuBasicQotLike {
+  security: FutuSecurity
+  name?: string
+  isSuspended: boolean
+  updateTime: string
+  highPrice: number
+  openPrice: number
+  lowPrice: number
+  curPrice: number
+  lastClosePrice: number
+  volume: FutuLongLike
+  turnover: number
+  updateTimestamp?: number
+}
+
 /** Qot_Common.SecurityStaticBasic (subset consumed for ContractDetails). */
 export interface FutuStaticBasicLike {
   security: FutuSecurity
@@ -187,6 +211,17 @@ export interface FutuGateway {
   getPositionList(header: FutuTrdHeader): Promise<FutuPositionLike[]>
   getSecuritySnapshot(securities: FutuSecurity[]): Promise<FutuSnapshotLike[]>
   getStaticInfo(securities: FutuSecurity[]): Promise<FutuStaticInfoLike[]>
+  /**
+   * Subscribe to Qot_UpdateBasicQot push for the given securities (Qot_Sub,
+   * SubType_Basic) and register this connection for push (isRegOrUnRegPush).
+   * `onUpdate` fires once per pushed batch. Returns an unsubscribe function
+   * that reverses both the subscription and the push registration for these
+   * securities — it does NOT affect subscriptions for other securities.
+   */
+  subscribeBasicQuote(
+    securities: FutuSecurity[],
+    onUpdate: (rows: FutuBasicQotLike[]) => void,
+  ): Promise<() => Promise<void>>
 }
 
 export type FutuGatewayFactory = (config: FutuGatewayConfig) => Promise<FutuGateway> | FutuGateway

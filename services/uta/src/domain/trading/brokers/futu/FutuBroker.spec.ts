@@ -25,6 +25,7 @@ function makeGateway(overrides: Partial<FutuGateway> = {}): FutuGateway {
     getPositionList: vi.fn(async () => []),
     getSecuritySnapshot: vi.fn(async () => []),
     getStaticInfo: vi.fn(async () => []),
+    subscribeBasicQuote: vi.fn(async () => vi.fn(async () => {})),
     ...overrides,
   }
 }
@@ -353,3 +354,90 @@ describe('FutuBroker native key', () => {
     expect(broker.resolveNativeKey(key).localSymbol).toBe('HK.00700')
   })
 })
+
+// ==================== subscribeQuote (live push) ====================
+
+describe('FutuBroker.subscribeQuote', () => {
+  it('subscribes via the gateway and maps pushed BasicQot rows (no bid/ask)', async () => {
+    let capturedOnUpdate: ((rows: unknown[]) => void) | null = null
+    const unsubscribe = vi.fn(async () => {})
+    const gateway = makeGateway({
+      subscribeBasicQuote: vi.fn(async (securities, onUpdate) => {
+        expect(securities).toEqual([{ market: 1, code: '00700' }])
+        capturedOnUpdate = onUpdate as (rows: unknown[]) => void
+        return unsubscribe
+      }),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const updates: unknown[] = []
+    const stop = await broker.subscribeQuote(makeContract('HK.00700'), (u) => updates.push(u))
+
+    expect(gateway.subscribeBasicQuote).toHaveBeenCalledTimes(1)
+    expect(capturedOnUpdate).not.toBeNull()
+
+    // Simulate a Qot_UpdateBasicQot push arriving.
+    capturedOnUpdate!([{
+      security: { market: 1, code: '00700' }, isSuspended: false, updateTime: '2026-08-26 10:00:00',
+      highPrice: 630, openPrice: 615, lowPrice: 612, curPrice: 620.5, lastClosePrice: 618,
+      volume: '1234567', turnover: 7.6e8, updateTimestamp: 1_750_000_000,
+    }])
+
+    expect(updates).toEqual([{
+      contract: expect.objectContaining({ localSymbol: 'HK.00700' }),
+      last: '620.5', high: '630', low: '612', open: '615', lastClose: '618',
+      volume: '1234567', turnover: '760000000',
+      timestamp: new Date(1_750_000_000 * 1000),
+    }])
+
+    await stop()
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('delivers only the matching security to each of two overlapping subscriptions', async () => {
+    const listeners: Array<(rows: unknown[]) => void> = []
+    const unsubA = vi.fn(async () => {})
+    const unsubB = vi.fn(async () => {})
+    let call = 0
+    const gateway = makeGateway({
+      subscribeBasicQuote: vi.fn(async (_securities, onUpdate) => {
+        listeners.push(onUpdate as (rows: unknown[]) => void)
+        call += 1
+        return call === 1 ? unsubA : unsubB
+      }),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const aUpdates: unknown[] = []
+    const bUpdates: unknown[] = []
+    await broker.subscribeQuote(makeContract('HK.00700'), (u) => aUpdates.push(u))
+    await broker.subscribeQuote(makeContract('US.AAPL'), (u) => bUpdates.push(u))
+
+    // Each subscribeBasicQuote call is independent in this fake (mirrors how
+    // FutuGatewayClient fans push out per-subscription in the real
+    // implementation) — push only the row for HK.00700 to the first listener.
+    listeners[0]([{
+      security: { market: 1, code: '00700' }, isSuspended: false, updateTime: '',
+      highPrice: 1, openPrice: 1, lowPrice: 1, curPrice: 1, lastClosePrice: 1, volume: 0, turnover: 0,
+    }])
+
+    expect(aUpdates).toHaveLength(1)
+    expect(bUpdates).toHaveLength(0)
+  })
+
+  it('refuses when the contract cannot be resolved to a Futu key', async () => {
+    const broker = makeBroker(makeGateway())
+    await broker.init()
+    await expect(broker.subscribeQuote(new Contract(), () => {})).rejects.toMatchObject({ name: 'BrokerError', code: 'EXCHANGE' })
+  })
+
+  it('wraps a gateway subscribe failure as a BrokerError', async () => {
+    const gateway = makeGateway({ subscribeBasicQuote: vi.fn(async () => { throw new Error('not entitled for real-time quotes') }) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    await expect(broker.subscribeQuote(makeContract('HK.00700'), () => {})).rejects.toMatchObject({ name: 'BrokerError' })
+  })
+})
+

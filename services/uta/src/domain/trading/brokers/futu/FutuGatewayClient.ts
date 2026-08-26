@@ -16,7 +16,7 @@
  * plans/uta-broker-futu.md).
  */
 
-import ftWebsocket from 'futu-api'
+import ftWebsocket, { ftCmdID } from 'futu-api'
 import {
   type FutuGateway,
   type FutuGatewayConfig,
@@ -28,13 +28,27 @@ import {
   type FutuSecurity,
   type FutuSnapshotLike,
   type FutuStaticInfoLike,
+  type FutuBasicQotLike,
+  FutuSubType,
 } from './futu-types.js'
 
 const CONNECT_TIMEOUT_MS = 20_000
 
+/** `${market}.${code}` — a stable dedupe/lookup key for a wire Security. */
+function securityKey(s: FutuSecurity): string {
+  return `${s.market}.${s.code}`
+}
+
+interface QuoteSubscription {
+  securities: Set<string>
+  onUpdate: (rows: FutuBasicQotLike[]) => void
+}
+
 export class FutuGatewayClient implements FutuGateway {
   private readonly cfg: FutuGatewayConfig
   private ws: ftWebsocket | null = null
+  private nextSubscriptionId = 1
+  private readonly quoteSubscriptions = new Map<number, QuoteSubscription>()
 
   constructor(cfg: FutuGatewayConfig) {
     this.cfg = cfg
@@ -43,6 +57,7 @@ export class FutuGatewayClient implements FutuGateway {
   async connect(): Promise<void> {
     const ws = new ftWebsocket()
     this.ws = ws
+    ws.onPush = (cmd, response) => this.handlePush(cmd, response)
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error(`FutuOpenD connect timed out after ${CONNECT_TIMEOUT_MS}ms (${this.cfg.host}:${this.cfg.port})`))
@@ -59,6 +74,7 @@ export class FutuGatewayClient implements FutuGateway {
   stop(): void {
     this.ws?.stop()
     this.ws = null
+    this.quoteSubscriptions.clear()
   }
 
   async getGlobalState(): Promise<FutuGlobalStateLike> {
@@ -89,6 +105,67 @@ export class FutuGatewayClient implements FutuGateway {
   async getStaticInfo(securities: FutuSecurity[]): Promise<FutuStaticInfoLike[]> {
     const resp = await this.require().GetStaticInfo({ c2s: { securityList: securities } })
     return this.s2c<{ staticInfoList?: FutuStaticInfoLike[] }>(resp, 'GetStaticInfo').staticInfoList ?? []
+  }
+
+  /**
+   * Subscribe to Qot_UpdateBasicQot push (Qot_Sub, SubType_Basic). Multiple
+   * concurrent subscriptions share the single underlying `ftWebsocket`
+   * connection and `onPush` callback slot — `handlePush` fans pushed rows out
+   * to every subscription whose security set matches. Unsubscribe reference-
+   * counts across subscriptions: a security is only un-subscribed on the wire
+   * once no remaining subscription still wants it, so overlapping callers
+   * (e.g. two Market-page widgets watching the same symbol) never steal each
+   * other's push feed.
+   */
+  async subscribeBasicQuote(
+    securities: FutuSecurity[],
+    onUpdate: (rows: FutuBasicQotLike[]) => void,
+  ): Promise<() => Promise<void>> {
+    const ws = this.require()
+    await ws.Sub({
+      c2s: {
+        securityList: securities,
+        subTypeList: [FutuSubType.Basic],
+        isSubOrUnSub: true,
+        isRegOrUnRegPush: true,
+      },
+    })
+    const id = this.nextSubscriptionId++
+    this.quoteSubscriptions.set(id, { securities: new Set(securities.map(securityKey)), onUpdate })
+
+    return async () => {
+      this.quoteSubscriptions.delete(id)
+      const wanted = new Set<string>()
+      for (const sub of this.quoteSubscriptions.values()) {
+        for (const key of sub.securities) wanted.add(key)
+      }
+      const toUnsub = securities.filter((s) => !wanted.has(securityKey(s)))
+      if (toUnsub.length === 0) return
+      try {
+        await ws.Sub({
+          c2s: {
+            securityList: toUnsub,
+            subTypeList: [FutuSubType.Basic],
+            isSubOrUnSub: false,
+            isRegOrUnRegPush: false,
+          },
+        })
+      } catch (err) {
+        // Best-effort: the connection may already be closing (stop()).
+        // Losing an explicit unsubscribe ack is not actionable by the caller.
+        console.warn('FutuGatewayClient: unsubscribe failed (ignored):', err instanceof Error ? err.message : err)
+      }
+    }
+  }
+
+  private handlePush(cmd: number, response: unknown): void {
+    if (cmd !== ftCmdID['QotUpdateBasicQot'].cmd) return
+    const rows = (response as { s2c?: { basicQotList?: FutuBasicQotLike[] } } | undefined)?.s2c?.basicQotList
+    if (!rows || rows.length === 0) return
+    for (const sub of this.quoteSubscriptions.values()) {
+      const matched = rows.filter((r) => sub.securities.has(securityKey(r.security)))
+      if (matched.length > 0) sub.onUpdate(matched)
+    }
   }
 
   private require(): ftWebsocket {

@@ -31,5 +31,6 @@ declare module 'futu-api' {
     GetPositionList(req: unknown): Promise<FtResponseEnvelope>
     GetSecuritySnapshot(req: unknown): Promise<FtResponseEnvelope>
     GetStaticInfo(req: unknown): Promise<FtResponseEnvelope>
+    Sub(req: unknown): Promise<FtResponseEnvelope>
   }
 }
