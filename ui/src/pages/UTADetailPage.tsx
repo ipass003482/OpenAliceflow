@@ -20,6 +20,7 @@ import { fmt, fmtPnl, fmtNum, fmtPctSigned, isUnsetDecimal } from '../lib/format
 import { secTypeToClass, assetClassLabel, ASSET_CLASS_ORDER, type AssetClass } from '../lib/asset-class'
 import { ContractCell, contractPrimary } from '../lib/contract-display'
 import { displayNameForUTA } from '../lib/uta-account-filter'
+import { PositionLiveTick } from '../components/uta/PositionLiveTick'
 
 // ==================== Page ====================
 
@@ -301,6 +302,7 @@ export function UTADetailPage({ spec }: UTADetailPageProps) {
               </div>
 
               <PositionsSection
+                utaId={id}
                 positions={positions}
                 onCloseClick={(p) => setOrderMode({
                   kind: 'close',
@@ -590,7 +592,8 @@ function Section({ title, action, children }: { title: string; action?: React.Re
 
 interface PositionGroup { class: AssetClass; positions: Position[] }
 
-export function PositionsSection({ positions, onCloseClick }: {
+export function PositionsSection({ utaId, positions, onCloseClick }: {
+  utaId: string
   positions: Position[]
   onCloseClick: (p: Position) => void
 }) {
@@ -651,6 +654,7 @@ export function PositionsSection({ positions, onCloseClick }: {
               {g.positions.map((position, index) => (
                 <PositionMobileRow
                   key={`${g.class}-${index}`}
+                  utaId={utaId}
                   position={position}
                   onClose={() => onCloseClick(position)}
                 />
@@ -708,7 +712,7 @@ export function PositionsSection({ positions, onCloseClick }: {
                     </td>
                   </tr>
                   {g.positions.map((p, i) => (
-                    <PositionRow key={`${g.class}-${i}`} position={p} onClose={() => onCloseClick(p)} />
+                    <PositionRow key={`${g.class}-${i}`} utaId={utaId} position={p} onClose={() => onCloseClick(p)} />
                   ))}
                 </Fragment>
               )
@@ -724,20 +728,22 @@ function PositionMetric({
   label,
   value,
   valueClassName = 'text-foreground',
+  extra,
 }: {
   label: string
   value: string
   valueClassName?: string
+  extra?: React.ReactNode
 }) {
   return (
     <div className="min-w-0">
       <dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className={`mt-0.5 truncate text-[12px] tabular-nums ${valueClassName}`} title={value}>{value}</dd>
+      <dd className={`mt-0.5 truncate text-[12px] tabular-nums ${valueClassName}`} title={value}>{value}{extra}</dd>
     </div>
   )
 }
 
-function PositionMobileRow({ position: p, onClose }: { position: Position; onClose: () => void }) {
+function PositionMobileRow({ utaId, position: p, onClose }: { utaId: string; position: Position; onClose: () => void }) {
   const ccy = p.currency ?? 'USD'
   const cost = Number(p.avgCost) * Number(p.quantity)
   const pnl = Number(p.unrealizedPnL)
@@ -774,7 +780,11 @@ function PositionMobileRow({ position: p, onClose }: { position: Position; onClo
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border bg-secondary/35 px-3 py-3">
         <PositionMetric label="Quantity" value={fmtNum(p.quantity)} />
         <PositionMetric label="Average cost" value={fmt(p.avgCost, ccy)} />
-        <PositionMetric label="Current price" value={fmt(p.marketPrice, ccy)} />
+        <PositionMetric
+          label="Current price"
+          value={fmt(p.marketPrice, ccy)}
+          extra={<PositionLiveTick utaId={utaId} aliceId={p.contract.aliceId} formatFallback={(v) => fmt(v, ccy)} />}
+        />
         <PositionMetric
           label="Unrealized PnL"
           value={fmtPnl(pnl, ccy)}
@@ -796,7 +806,7 @@ function PositionMobileRow({ position: p, onClose }: { position: Position; onClo
   )
 }
 
-function PositionRow({ position: p, onClose }: { position: Position; onClose: () => void }) {
+function PositionRow({ utaId, position: p, onClose }: { utaId: string; position: Position; onClose: () => void }) {
   const ccy = p.currency ?? 'USD'
   const cost = Number(p.avgCost) * Number(p.quantity)
   const pnl = Number(p.unrealizedPnL)
@@ -815,6 +825,7 @@ function PositionRow({ position: p, onClose }: { position: Position; onClose: ()
       <td className="px-3 py-2 text-right text-foreground tabular-nums">{fmtNum(p.quantity)}</td>
       <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">
         {fmt(p.avgCost, ccy)} <span className="text-muted-foreground/40">→</span> <span className="text-foreground">{fmt(p.marketPrice, ccy)}</span>
+        <PositionLiveTick utaId={utaId} aliceId={p.contract.aliceId} formatFallback={(v) => fmt(v, ccy)} />
       </td>
       <td className="px-3 py-2 text-right text-foreground tabular-nums">{fmt(p.marketValue, ccy)}</td>
       <td className={`px-3 py-2 text-right font-medium tabular-nums ${pnl >= 0 ? 'text-success' : 'text-destructive'}`}>

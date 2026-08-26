@@ -163,6 +163,7 @@ export class UTAManager {
       id: uta.id,
       label: uta.label,
       asVendor: uta.asVendor,
+      supportsLiveQuote: uta.supportsLiveQuote,
       capabilities: uta.getCapabilities(),
       health: uta.getHealthInfo(),
     }))

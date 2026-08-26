@@ -289,8 +289,30 @@ export interface UTASummary {
   id: string
   label: string
   asVendor: boolean
+  /** Whether this account's broker supports live quote push. Check before
+   *  opening a `/quote-stream` connection — never assume support. */
+  supportsLiveQuote: boolean
   capabilities: { supportedSecTypes: string[]; supportedOrderTypes: string[] }
   health: BrokerHealthInfo
+}
+
+/**
+ * One pushed frame from `GET /uta/:id/quote-stream` (Server-Sent Events).
+ * Mirrors `QuoteUpdate` in packages/uta-protocol/src/types/broker.ts —
+ * bid/ask/volume/high/low are OPTIONAL because not every broker's push
+ * channel carries them (Futu's basic-quote push has none of the order-book
+ * fields). Absent means "this push doesn't carry it" — never render a
+ * fabricated placeholder for a missing field.
+ */
+export interface LiveQuoteUpdate {
+  contract: { aliceId?: string; symbol?: string; localSymbol?: string }
+  last: string
+  bid?: string
+  ask?: string
+  volume?: string
+  high?: string
+  low?: string
+  timestamp: string
 }
 
 export interface TradingAccount {

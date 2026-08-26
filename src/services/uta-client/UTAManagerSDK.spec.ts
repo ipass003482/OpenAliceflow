@@ -13,6 +13,7 @@ const summary = (id: string, tier: UTATier, over: Partial<UTASummary> = {}): UTA
   id,
   label: id,
   asVendor: true,
+  supportsLiveQuote: false,
   capabilities: { supportedSecTypes: [], supportedOrderTypes: [] },
   health: { status: 'healthy', reach: 'connected', tier, consecutiveFailures: 0, recovering: false, connecting: false, disabled: false },
   ...over,

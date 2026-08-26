@@ -7,6 +7,7 @@ function summary(id: string, tier: UTATier): UTASummary {
     id,
     label: id,
     asVendor: true,
+    supportsLiveQuote: false,
     capabilities: { supportedSecTypes: [], supportedOrderTypes: [] },
     health: {
       status: 'healthy',

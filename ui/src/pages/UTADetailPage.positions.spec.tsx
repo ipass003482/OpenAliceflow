@@ -6,6 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Position } from '../api/types'
 import { PositionsSection } from './UTADetailPage'
 
+// PositionsSection now renders PositionLiveTick (live quote overlay) per row.
+// This suite only cares about position/close-action rendering, so stub the
+// hook at its own module boundary rather than depending on real network
+// behavior (getLiveQuoteCapabilities would otherwise attempt a real fetch).
+vi.mock('../hooks/useLiveQuote', () => ({
+  useLiveQuote: () => ({ status: 'unsupported' as const, quote: null }),
+}))
+
 function position(symbol: string): Position {
   return {
     contract: {
@@ -36,6 +44,7 @@ describe('UTADetailPage responsive positions', () => {
 
     render(
       <PositionsSection
+        utaId="demo-paper"
         positions={[aapl, nvda]}
         onCloseClick={onCloseClick}
       />,
@@ -58,6 +67,7 @@ describe('UTADetailPage responsive positions', () => {
 
     render(
       <PositionsSection
+        utaId="demo-paper"
         positions={[aapl]}
         onCloseClick={onCloseClick}
       />,

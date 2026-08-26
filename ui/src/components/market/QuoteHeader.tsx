@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { marketApi, type EquityQuote } from '../../api/market'
 import { Skeleton } from '../StateViews'
 import { fmtNumber, fmtMoneyShort, fmtPercent, fmtInt } from './format'
+import { useTradeableLiveQuote } from '../../hooks/useTradeableLiveQuote'
+import { LiveQuoteBadge } from './LiveQuoteBadge'
 
 interface Props {
   symbol: string
@@ -11,6 +13,7 @@ export function QuoteHeader({ symbol }: Props) {
   const [quote, setQuote] = useState<EquityQuote | null>(null)
   const [provider, setProvider] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const live = useTradeableLiveQuote(symbol, 'equity')
 
   useEffect(() => {
     let cancelled = false
@@ -25,17 +28,25 @@ export function QuoteHeader({ symbol }: Props) {
     }
     fetch()
     // Quote is price-sensitive; re-poll every 60s so a tab left open overnight
-    // doesn't show yesterday's last print as if it were live.
+    // doesn't show yesterday's last print as if it were live. The headline
+    // price itself may separately be overridden by a broker live push below —
+    // this poll still drives every other field (name/exchange/change%/
+    // fundamentals) that a live tick doesn't carry.
     const timer = setInterval(fetch, 60_000)
     return () => { cancelled = true; clearInterval(timer) }
   }, [symbol])
 
   const name = quote?.name as string | undefined
   const exchange = quote?.exchange as string | undefined
-  const lastPrice = quote?.last_price as number | undefined
   const change = quote?.change as number | undefined
   const changePct = quote?.change_percent as number | undefined
   const up = (change ?? 0) >= 0
+  // Prefer a live broker tick for the headline price when one is arriving;
+  // change/% still reflect the last vendor poll — mixing a live LTP with a
+  // stale change baseline would misattribute where each number came from,
+  // so change/% deliberately stay on the same source as before.
+  const isLive = live.status === 'live' && live.quote != null
+  const lastPrice = isLive ? Number(live.quote!.last) : (quote?.last_price as number | undefined)
   // First-load: no quote yet and no error → show skeletons in place of the
   // (otherwise dash-filled) value slots. `quote` stays set across the 60s
   // re-poll, so this won't flash on a background refetch.
@@ -56,11 +67,12 @@ export function QuoteHeader({ symbol }: Props) {
                   {exchange}
                 </span>
               )}
-              {provider && (
+              {provider && !isLive && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
                   {provider}
                 </span>
               )}
+              {isLive && <LiveQuoteBadge />}
             </>
           )}
         </div>
@@ -85,8 +97,12 @@ export function QuoteHeader({ symbol }: Props) {
         </div>
       </div>
 
-      {/* Bid / ask intentionally omitted — they're real-time L1 quote data
-          that belongs at the execution layer (UTA), not in analysis. */}
+      {/* Bid / ask still omitted here — not a layering decision anymore
+          (see plans/futu-realtime-quotes.md), but an honesty one: the
+          generic live-quote push contract doesn't guarantee bid/ask (Futu's
+          basic-quote push, the only live source wired so far, doesn't carry
+          them at all), so there is nothing real to show without fabricating
+          it. Surface them here once a broker's live push actually includes them. */}
       <dl className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-x-4 gap-y-1 text-[11px]">
         <Field label="Open"      value={fmtNumber(quote?.open)}        loading={loading} />
         <Field label="Prev"      value={fmtNumber(quote?.prev_close)}  loading={loading} />

@@ -77,13 +77,12 @@ the durable truth after it changes. Git history is the archive.
   in `dev`; remaining work is the TypeScript CLI conversion, logs/Doctor/update
   UX, config check, registry deletion, authenticity-hardened updates, and
   release-gate N-1.
-- [[plans/uta-broker-futu.md]] — Read-only Futu (富途) Broker Pack.
-  Proto-level grounding (Qot_Common Security/QotMarket, ftCmdID table) is
-  recorded; `FutuGatewayClient`/`FutuBroker` implementation has not started.
-  No FutuOpenD gateway or Futu account is available for live verification.
+- [[plans/uta-broker-futu.md]] — Read-only Futu (富途) Broker Pack. Increment 1
+  (read-only `FutuGatewayClient`/`FutuBroker`, registered as the `'futu'`
+  `BrokerEngine`) is complete and unit-tested (29/29 tests). No FutuOpenD
+  gateway or Futu account is available for live verification.
 - [[plans/futu-realtime-quotes.md]] — Genuine push-based live quotes for
-  Futu, layered on top of the read-only pack above. No push/subscribe
-  primitive exists anywhere in `IBroker`/`BarService` today; this is a
-  5-layer project (FutuGateway/FutuBroker → `IBroker` contract → UTA HTTP →
-  Alice webui relay → "Market" UI). Increment 1 (FutuGateway/FutuBroker
-  subscription) is done (41/41 tests); increments 2–5 are unstarted.
+  Futu, layered on top of the read-only pack above. All 5 layers
+  (FutuGateway/FutuBroker subscription → `IBroker` contract → UTA HTTP SSE →
+  Alice webui relay → Market/UTA-detail UI) are complete and unit-tested.
+  Not yet verified against a real FutuOpenD gateway/account.

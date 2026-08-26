@@ -1,6 +1,7 @@
 # Futu Real-Time Quote Streaming
 
-Status: increment 1 (FutuGateway/FutuBroker subscription layer) in progress.
+Status: all 5 increments complete (code/unit-test level). Not yet verified
+against a real FutuOpenD gateway/account — see "Overall status" at the end.
 
 Related owner guides: [[docs/market-data-architecture.md]],
 [[docs/broker-packs.md]]. Related plan: [[plans/uta-broker-futu.md]] (this
@@ -166,16 +167,69 @@ from the prior design intent, not a silent regression.
   test in `trading-proxy.spec.ts` now proves it against a real streaming
   `ReadableStream` upstream (not just buffered JSON like the file's other
   tests), confirming the claim instead of trusting it. 13/13 pass.
-- [ ] **Increment 5 — UI.** Per the maintainer's explicit decision (see
-  "Target surface decision" above), wire a live-quote hook into BOTH
+- [x] **Increment 5 — UI.** Per the maintainer's explicit decision (see
+  "Target surface decision" above) and the pre-implementation design pass
+  (approach A — a shared `useLiveQuote` hook, chosen over a global
+  registration registry), wired a live-quote hook into BOTH
   `UTADetailPage.tsx` (position mark price — the architecturally natural
-  consumer) AND the Market page's `QuoteHeader.tsx`/`EquityDetail.tsx`
-  (overlaying the vendor-polled quote when the viewed symbol resolves to a
-  connected UTA account with `subscribeQuote` support), overriding that
-  file's prior "bid/ask belongs to execution layer" boundary comment.
-  Needs its own design pass (EventSource client hook shape, symbol→UTA
-  resolution reusing the existing `contracts/search` bridge, visual "live"
-  vs "delayed" distinction) before writing frontend code — not started.
+  consumer) AND the Market page's `QuoteHeader.tsx` (overlaying the
+  vendor-polled quote when the viewed symbol resolves to a connected UTA
+  account with `subscribeQuote` support), overriding that file's prior
+  "bid/ask belongs to execution layer" boundary comment for the headline
+  price only (change/change% stay vendor-sourced — see below).
+  - Server: `UTASummary` gained a static `supportsLiveQuote: boolean` field
+    (`packages/uta-protocol/src/types/manager.ts`), filled in by
+    `UTAManager.listUTAs()` from `UnifiedTradingAccount.supportsLiveQuote`
+    added in Increment 2. This lets the frontend decide whether to open an
+    SSE connection at all without probing every account.
+  - `ui/src/live/live-quotes.ts` (new): a keyed live-quote store keyed by
+    `${utaId}:${contract key}`, one `EventSource` per key shared by every
+    subscriber of that key (matching the reference-counting pattern already
+    used in `FutuGatewayClient` — don't reopen a stream two components both
+    want). `getLiveQuoteCapabilities` one-shot-fetches + module-level caches
+    `supportsLiveQuote` per UTA id (a static capability, not a live signal,
+    so it is deliberately NOT polled like `accountHealthLive`).
+  - `ui/src/hooks/useLiveQuote.ts` (new): subscribes via
+    `useSyncExternalStore` over the store's `subscribe`/`getState`, not the
+    store's own `useStore()` convenience method — `useStore()`'s
+    `useEffect(fn, [])` only binds to the store instance that was live on
+    first mount, so it would never rebind if the caller's `key`/store
+    identity changes after mount (e.g. `utaId` resolving from `undefined` to
+    a real id once `searchContracts` returns). `useSyncExternalStore` fixes
+    this because React resubscribes whenever the `subscribe` function
+    identity changes.
+  - `ui/src/hooks/useTradeableLiveQuote.ts` (new): Market-page-only wrapper
+    that resolves the viewed vendor symbol to a UTA id/contract via the
+    existing `tradingApi.searchContracts` bridge (no new resolution API),
+    then delegates to `useLiveQuote`.
+  - `QuoteHeader.tsx`: headline price is replaced by the live value plus a
+    green "Live" badge (`LiveQuoteBadge.tsx`, new) when a live quote is
+    present; change/change% intentionally keep the original vendor-polled
+    numbers rather than being recomputed against the live last price, to
+    avoid silently mixing two different data sources' timestamps into one
+    misleading percentage.
+  - `PositionLiveTick.tsx` (new): overlays only the *displayed* mark price
+    on a position row; PnL/market-value figures are left on the polled
+    `getPositions()` values — an inconsistent-looking "price ticks but PnL
+    doesn't" would be worse than a consistently-polled row. `utaId` now
+    flows through `PositionsSection` → `PositionRow`/`PositionMobileRow` →
+    `PositionLiveTick` in `UTADetailPage.tsx`.
+  - `FutuBasicQuoteUpdate`/`QuoteUpdate` bid/ask/volume/high/low all stay
+    optional end-to-end, consistent with Increment 1's "never fabricate
+    unpushed fields" rule — the UI simply doesn't render fields that are
+    `undefined`.
+  - Verification: `npx tsc --noEmit` (root) and `cd ui && npx tsc -b` both
+    clean; 7 targeted test files / 50 tests pass (`useLiveQuote.spec.ts`,
+    `useTradeableLiveQuote.spec.ts`, `QuoteHeader.spec.tsx`,
+    `PositionLiveTick.spec.tsx`, `UTADetailPage.positions.spec.tsx`,
+    `uta-account-filter.spec.ts`, `uta-manager.spec.ts`); manually verified
+    in a running demo build (`pnpm dev:demo`) that both the Market page
+    (`/market/equity/AAPL`) and a UTA detail page (`/settings/uta/demo-paper`)
+    render correctly with demo accounts (`supportsLiveQuote: false`)
+    correctly falling back to vendor-polled prices with no "Live" badge —
+    the demo fixtures don't exercise the live-badge/SSE path itself since no
+    demo account claims live support. NOT verified against a real FutuOpenD
+    gateway or Futu account — still unavailable in this environment.
 
 ## Explicitly out of scope for increment 1
 
@@ -201,3 +255,20 @@ or Futu account — still unavailable in this environment. Increments 2–5
 (the `IBroker` contract, UTA HTTP boundary, Alice webui relay, and "Market"
 UI page) remain unstarted; each needs its own scope confirmation before
 starting given how much cross-cutting surface they touch.
+
+## Overall status
+
+All 5 increments are complete and verified end-to-end at the code/unit-test
+level: `FutuGateway`/`FutuBroker` subscription → `IBroker.subscribeQuote?` /
+`QuoteUpdate` contract → `GET /uta/:id/quote-stream` SSE endpoint → Alice
+webui's existing transparent SSE passthrough → the `useLiveQuote` hook wired
+into both the Market page and the UTA position table. Every layer's tests
+pass and both `npx tsc --noEmit` and `cd ui && npx tsc -b` are clean.
+
+What is explicitly still missing before a user can see a genuinely live tick
+in this UI: a running FutuOpenD gateway with a logged-in Futu account. Every
+test in this plan — including the new frontend ones — exercises the pipeline
+against fakes/mocks (a fake gateway push emitter, a fake `EventSource`, demo
+fixtures with `supportsLiveQuote: false`). No increment in this plan has been
+run against real Futu market data; that remains the maintainer's own
+end-to-end acceptance step once FutuOpenD is available locally.

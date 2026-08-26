@@ -14,6 +14,10 @@ export interface UTASummary {
   label: string
   /** Whether this UTA participates in broker-backed market-data discovery. */
   asVendor: boolean
+  /** Whether this account's broker supports live quote push (`IBroker.subscribeQuote`).
+   *  Callers must check this before opening a `/quote-stream` connection —
+   *  the route never silently degrades to polling on their behalf. */
+  supportsLiveQuote: boolean
   capabilities: AccountCapabilities
   health: BrokerHealthInfo
 }

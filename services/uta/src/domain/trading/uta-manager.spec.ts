@@ -72,6 +72,18 @@ describe('UTAManager', () => {
       expect(manager.listUTAs()[0]).toMatchObject({ id: 'a1', asVendor: false })
     })
 
+    it('reports supportsLiveQuote: false for a broker without subscribeQuote (MockBroker today)', () => {
+      manager.add(makeUta(new MockBroker({ id: 'a1' })))
+      expect(manager.listUTAs()[0].supportsLiveQuote).toBe(false)
+    })
+
+    it('reports supportsLiveQuote: true when the broker implements subscribeQuote', () => {
+      const broker = new MockBroker({ id: 'a1' })
+      ;(broker as unknown as Record<string, unknown>).subscribeQuote = async () => async () => {}
+      manager.add(makeUta(broker))
+      expect(manager.listUTAs()[0].supportsLiveQuote).toBe(true)
+    })
+
   })
 
   // ==================== resolve ====================
