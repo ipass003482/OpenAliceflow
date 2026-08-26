@@ -50,5 +50,7 @@ declare module 'futu-api' {
     GetOrderList(req: unknown): Promise<FtResponseEnvelope>
     GetHistoryOrderList(req: unknown): Promise<FtResponseEnvelope>
     SubAccPush(req: unknown): Promise<FtResponseEnvelope>
+    RequestHistoryKL(req: unknown): Promise<FtResponseEnvelope>
+    GetOrderFee(req: unknown): Promise<FtResponseEnvelope>
   }
 }

@@ -65,6 +65,17 @@ export const FutuModifyOrderOp = { Unknown: 0, Normal: 1, Cancel: 2, Disable: 3,
 /** Trd_Common.TimeInForce. */
 export const FutuTimeInForce = { Day: 0, GTC: 1, IOC: 2, GTD: 3 } as const
 
+/** Qot_Common.RehabType — 前復權 matches other brokers' adjusted-bar default. */
+export const FutuRehabType = { None: 0, Forward: 1, Backward: 2 } as const
+
+/**
+ * Qot_Common.KLType (subset mapped from BarInterval — covers all 8 Alice
+ * intervals; 3Min/10Min/120Min/180Min/Month/Quarter/Year are unmapped).
+ */
+export const FutuKLType = {
+  Min1: 1, Day: 2, Week: 3, Min5: 6, Min15: 7, Min30: 8, Min60: 9, Min240: 15,
+} as const
+
 /** Trd_Common.Currency — enum value to ISO-style code. */
 export const FUTU_CURRENCY_CODES: Record<number, string> = {
   1: 'HKD', 2: 'USD', 3: 'CNH', 4: 'JPY', 5: 'SGD', 6: 'AUD', 7: 'CAD', 8: 'MYR', 9: 'NZD',
@@ -239,6 +250,30 @@ export interface FutuOrderLike {
   auxPrice?: number
 }
 
+/** Trd_Common.OrderFill (subset consumed from Trd_UpdateOrderFill push). */
+export interface FutuOrderFillLike {
+  trdSide: number
+  fillID: FutuLongLike
+  fillIDEx?: string
+  orderID?: FutuLongLike
+  orderIDEx?: string
+  code: string
+  name?: string
+  qty: number
+  price: number
+  createTime: string
+  updateTimestamp?: number
+  secMarket?: number
+  status?: number
+}
+
+/** Trd_Common.OrderFee (subset consumed from Trd_GetOrderFee). */
+export interface FutuOrderFeeLike {
+  orderIDEx: string
+  feeAmount?: number
+  feeList?: Array<{ title?: string; value?: number }>
+}
+
 /** Trd_PlaceOrder C2S — PacketID is filled in by the SDK, not by callers. */
 export interface FutuPlaceOrderParams {
   header: FutuTrdHeader
@@ -278,6 +313,39 @@ export interface FutuFilterConditions {
 export interface FutuConnectionEvent {
   state: 'dead' | 'restored'
   error?: string
+}
+
+/** Qot_Common.KLine (subset consumed for historical bars). */
+export interface FutuKLineLike {
+  time: string
+  /** True ⇒ placeholder row carrying only time info — no OHLCV. */
+  isBlank: boolean
+  highPrice?: number
+  openPrice?: number
+  lowPrice?: number
+  closePrice?: number
+  volume?: FutuLongLike
+  /** Epoch seconds. */
+  timestamp?: number
+}
+
+/** Qot_RequestHistoryKL C2S (subset — one page per call). */
+export interface FutuHistoryKLParams {
+  security: FutuSecurity
+  rehabType: number
+  klType: number
+  /** Strict time strings — same YYYY-MM-DD HH:MM:SS convention as Trd filters. */
+  beginTime: string
+  endTime: string
+  maxAckKLNum?: number
+  /** Pagination cursor from the previous page's response. */
+  nextReqKey?: unknown
+}
+
+export interface FutuHistoryKLPage {
+  klList: FutuKLineLike[]
+  /** Present ⇒ more pages remain; pass back verbatim. */
+  nextReqKey?: unknown
 }
 
 // ==================== Gateway abstraction ====================
@@ -337,10 +405,27 @@ export interface FutuGateway {
    * Trd_SubAccPush + Trd_UpdateOrder push — register `accID` for order-update
    * push (the accIDList is full-replacement per the proto, but this adapter
    * only ever drives one business account per connection). `onUpdate` fires
-   * once per pushed order-state change. The registration is re-established
-   * automatically after the SDK's internal transport reconnect.
+   * once per pushed order-state change; `onFill` (optional) once per pushed
+   * execution (Trd_UpdateOrderFill — the same SubAccPush registration covers
+   * both). The registration is re-established automatically after the SDK's
+   * internal transport reconnect.
    */
-  subscribeOrderUpdates(accID: FutuLongLike, onUpdate: (order: FutuOrderLike) => void): Promise<void>
+  subscribeOrderUpdates(
+    accID: FutuLongLike,
+    onUpdate: (order: FutuOrderLike) => void,
+    onFill?: (fill: FutuOrderFillLike) => void,
+  ): Promise<void>
+  /**
+   * Trd_GetOrderFee — real charged fees per SERVER order id (orderIDEx, not
+   * the numeric orderID). Only meaningful for orders that have fills.
+   */
+  getOrderFee(header: FutuTrdHeader, orderIDExList: string[]): Promise<FutuOrderFeeLike[]>
+  /**
+   * Qot_RequestHistoryKL — ONE page of historical K-lines ("拉取历史K线，
+   * 不读本地历史" per the SDK's own cmd table; quota-limited server pull).
+   * Callers own the pagination loop via `nextReqKey`.
+   */
+  requestHistoryKL(params: FutuHistoryKLParams): Promise<FutuHistoryKLPage>
   /**
    * Transport-state notification: `dead` when the underlying WebSocket
    * closes unexpectedly, `restored` after the SDK's built-in auto-reconnect

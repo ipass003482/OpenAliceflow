@@ -34,6 +34,11 @@ import {
   type FutuModifyOrderParams,
   type FutuFilterConditions,
   type FutuConnectionEvent,
+  type FutuHistoryKLParams,
+  type FutuHistoryKLPage,
+  type FutuKLineLike,
+  type FutuOrderFillLike,
+  type FutuOrderFeeLike,
   type FutuLongLike,
   FutuSubType,
 } from './futu-types.js'
@@ -62,7 +67,11 @@ export class FutuGatewayClient implements FutuGateway {
   private nextSubscriptionId = 1
   private readonly quoteSubscriptions = new Map<number, QuoteSubscription>()
   private connectionListener: ((event: FutuConnectionEvent) => void) | null = null
-  private orderPush: { accID: FutuLongLike; onUpdate: (order: FutuOrderLike) => void } | null = null
+  private orderPush: {
+    accID: FutuLongLike
+    onUpdate: (order: FutuOrderLike) => void
+    onFill?: (fill: FutuOrderFillLike) => void
+  } | null = null
   /** True during a deliberate stop() — suppresses dead-connection events. */
   private stopping = false
   /** Set once the FIRST login handshake settles; later onlogin(true) calls
@@ -262,14 +271,46 @@ export class FutuGatewayClient implements FutuGateway {
    * single registration slot suffices. Re-registered automatically by
    * restoreAfterReconnect after the SDK's internal transport reconnect.
    */
-  async subscribeOrderUpdates(accID: FutuLongLike, onUpdate: (order: FutuOrderLike) => void): Promise<void> {
+  async subscribeOrderUpdates(
+    accID: FutuLongLike,
+    onUpdate: (order: FutuOrderLike) => void,
+    onFill?: (fill: FutuOrderFillLike) => void,
+  ): Promise<void> {
     const ws = this.require()
-    this.orderPush = { accID, onUpdate }
+    this.orderPush = { accID, onUpdate, ...(onFill ? { onFill } : {}) }
     try {
       await ws.SubAccPush({ c2s: { accIDList: [accID] } })
     } catch (err) {
       this.orderPush = null
       throw err
+    }
+  }
+
+  /** Trd_GetOrderFee — real charged fees, keyed by server order id (orderIDEx). */
+  async getOrderFee(header: FutuTrdHeader, orderIDExList: string[]): Promise<FutuOrderFeeLike[]> {
+    if (orderIDExList.length === 0) return []
+    // Wire field is `orderIdExList` (lowercase d) per Trd_GetOrderFee.proto.
+    const resp = await this.require().GetOrderFee({ c2s: { header, orderIdExList: orderIDExList } })
+    return this.s2c<{ orderFeeList?: FutuOrderFeeLike[] }>(resp, 'GetOrderFee').orderFeeList ?? []
+  }
+
+  /** Qot_RequestHistoryKL — one page; pagination cursor passed back verbatim. */
+  async requestHistoryKL(params: FutuHistoryKLParams): Promise<FutuHistoryKLPage> {
+    const resp = await this.require().RequestHistoryKL({
+      c2s: {
+        rehabType: params.rehabType,
+        klType: params.klType,
+        security: params.security,
+        beginTime: params.beginTime,
+        endTime: params.endTime,
+        ...(params.maxAckKLNum !== undefined ? { maxAckKLNum: params.maxAckKLNum } : {}),
+        ...(params.nextReqKey !== undefined ? { nextReqKey: params.nextReqKey } : {}),
+      },
+    })
+    const s2c = this.s2c<{ klList?: FutuKLineLike[]; nextReqKey?: unknown }>(resp, 'RequestHistoryKL')
+    return {
+      klList: s2c.klList ?? [],
+      ...(s2c.nextReqKey !== undefined && s2c.nextReqKey !== null ? { nextReqKey: s2c.nextReqKey } : {}),
     }
   }
 
@@ -328,6 +369,11 @@ export class FutuGatewayClient implements FutuGateway {
     if (cmd === ftCmdID['TrdUpdateOrder']?.cmd) {
       const order = (response as { s2c?: { order?: FutuOrderLike } } | undefined)?.s2c?.order
       if (order) this.orderPush?.onUpdate(order)
+      return
+    }
+    if (cmd === ftCmdID['TrdUpdateOrderFill']?.cmd) {
+      const fill = (response as { s2c?: { orderFill?: FutuOrderFillLike } } | undefined)?.s2c?.orderFill
+      if (fill) this.orderPush?.onFill?.(fill)
       return
     }
     if (cmd !== ftCmdID['QotUpdateBasicQot']?.cmd) return

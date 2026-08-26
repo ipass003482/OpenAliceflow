@@ -32,6 +32,8 @@ function makeGateway(overrides: Partial<FutuGateway> = {}): FutuGateway {
     modifyOrder: vi.fn(async () => ({ orderID: '900000001' })),
     getOrderList: vi.fn(async () => []),
     getHistoryOrderList: vi.fn(async () => []),
+    requestHistoryKL: vi.fn(async () => ({ klList: [] })),
+    getOrderFee: vi.fn(async () => []),
     subscribeOrderUpdates: vi.fn(async () => {}),
     setConnectionListener: vi.fn(),
     ...overrides,
@@ -586,6 +588,71 @@ describe('FutuBroker.getOrders / getOrder', () => {
     expect(gateway.getOrderList).not.toHaveBeenCalled()
     expect(gateway.getHistoryOrderList).not.toHaveBeenCalled()
   })
+
+  it('a fill push invalidates the cached order row so the next read re-pulls', async () => {
+    let push: ((order: typeof ORDER_ROW) => void) | undefined
+    let pushFill: ((fill: { orderID?: string }) => void) | undefined
+    const gateway = makeGateway({
+      subscribeOrderUpdates: vi.fn(async (
+        _accID: unknown,
+        onUpdate: (order: typeof ORDER_ROW) => void,
+        onFill?: (fill: { orderID?: string }) => void,
+      ) => { push = onUpdate; pushFill = onFill }),
+      getOrderList: vi.fn(async () => [{ ...ORDER_ROW, orderStatus: 10 }]),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    push!(ORDER_ROW) // cached as Submitted
+    pushFill!({ orderID: '77001' }) // a fill arrived — cached row is stale now
+
+    const order = await broker.getOrder('77001')
+    expect(gateway.getOrderList).toHaveBeenCalled()
+    expect(order?.orderState.status).toBe('Submitted') // FilledPart maps to Submitted (still active)
+  })
+
+  it('enriches fee-bearing orders with real charged fees from Trd_GetOrderFee', async () => {
+    const filled = { ...ORDER_ROW, orderStatus: 11, currency: 1 } // FilledAll, HKD
+    const gateway = makeGateway({
+      getOrderList: vi.fn(async () => [filled]),
+      getOrderFee: vi.fn(async () => [{ orderIDEx: 'ex-1', feeAmount: 15.5 }]),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const order = await broker.getOrder('77001')
+
+    expect(gateway.getOrderFee).toHaveBeenCalledWith({ trdEnv: 0, accID: '11111', trdMarket: 1 }, ['ex-1'])
+    expect(order?.orderState.commissionAndFees).toBe(15.5)
+    expect(order?.orderState.commissionAndFeesCurrency).toBe('HKD')
+
+    // Second read hits the immutable fee cache — no repeat wire call.
+    await broker.getOrder('77001')
+    expect(gateway.getOrderFee).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips fee lookup entirely for orders without fills', async () => {
+    const gateway = makeGateway({ getOrderList: vi.fn(async () => [ORDER_ROW]) }) // Submitted
+    const broker = makeBroker(gateway)
+    await broker.init()
+    await broker.getOrder('77001')
+    expect(gateway.getOrderFee).not.toHaveBeenCalled()
+  })
+
+  it('a failed fee lookup is non-fatal and leaves fees unset', async () => {
+    const filled = { ...ORDER_ROW, orderStatus: 11 }
+    const gateway = makeGateway({
+      getOrderList: vi.fn(async () => [filled]),
+      getOrderFee: vi.fn(async () => { throw new Error('fee endpoint down') }),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const order = await broker.getOrder('77001')
+    expect(order).not.toBeNull()
+    // UNSET_DOUBLE sentinel means "no fee data", never a fabricated 0.
+    expect(order?.orderState.commissionAndFeesCurrency).toBe('')
+  })
 })
 
 // ==================== Connection state ====================
@@ -668,7 +735,111 @@ describe('FutuBroker connection state', () => {
 describe('FutuBroker capabilities', () => {
   it('declares single-leg equity order types now that writes are implemented', async () => {
     const broker = makeBroker(makeGateway())
-    expect(broker.getCapabilities()).toEqual({ supportedSecTypes: ['STK'], supportedOrderTypes: ['MKT', 'LMT', 'STP', 'STP LMT'] })
+    expect(broker.getCapabilities()).toEqual({
+      supportedSecTypes: ['STK'],
+      supportedOrderTypes: ['MKT', 'LMT', 'STP', 'STP LMT'],
+      historicalBars: {
+        supported: true,
+        quality: 'subscription',
+        supportedBarSizes: ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'],
+      },
+    })
+  })
+})
+
+// ==================== Historical K-lines ====================
+
+describe('FutuBroker.getHistorical', () => {
+  const KL_ROW = {
+    time: '2024-06-03 00:00:00', isBlank: false,
+    openPrice: 100, highPrice: 110, lowPrice: 95, closePrice: 105,
+    volume: 1_000_000, timestamp: 1_717_372_800,
+  }
+
+  it('requests forward-adjusted K-lines with the mapped KLType and a derived window', async () => {
+    const gateway = makeGateway({ requestHistoryKL: vi.fn(async () => ({ klList: [KL_ROW] })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const bars = await broker.getHistorical(makeContract('HK.00700'), { interval: '1d', limit: 10 })
+
+    expect(bars).toHaveLength(1)
+    expect(bars[0]).toEqual({
+      timestamp: new Date(1_717_372_800 * 1000),
+      open: '100', high: '110', low: '95', close: '105', volume: '1000000',
+    })
+    expect(gateway.requestHistoryKL).toHaveBeenCalledWith(expect.objectContaining({
+      security: { market: 1, code: '00700' },
+      rehabType: 1, // RehabType_Forward
+      klType: 2, // KLType_Day
+      beginTime: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+      endTime: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+    }))
+    const [args] = (gateway.requestHistoryKL as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(new Date(args.beginTime).getTime()).toBeLessThan(new Date(args.endTime).getTime())
+  })
+
+  it('maps every BarInterval onto a Futu KLType', async () => {
+    const gateway = makeGateway({ requestHistoryKL: vi.fn(async () => ({ klList: [] })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const expected: Array<[string, number]> = [
+      ['1m', 1], ['5m', 6], ['15m', 7], ['30m', 8], ['1h', 9], ['4h', 15], ['1d', 2], ['1w', 3],
+    ]
+    for (const [interval, klType] of expected) {
+      await broker.getHistorical(makeContract('US.AAPL'), { interval: interval as '1d' })
+      expect(gateway.requestHistoryKL).toHaveBeenLastCalledWith(expect.objectContaining({ klType }))
+    }
+  })
+
+  it('follows nextReqKey pagination until the final page', async () => {
+    const page1 = { klList: [{ ...KL_ROW, timestamp: 1_717_286_400 }], nextReqKey: 'cursor-1' }
+    const page2 = { klList: [KL_ROW] }
+    const requestHistoryKL = vi.fn(async () => page2).mockImplementationOnce(async () => page1)
+    const gateway = makeGateway({ requestHistoryKL })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const bars = await broker.getHistorical(makeContract('HK.00700'), { interval: '1d' })
+
+    expect(bars).toHaveLength(2)
+    expect(requestHistoryKL).toHaveBeenCalledTimes(2)
+    expect(requestHistoryKL.mock.calls[1][0]).toEqual(expect.objectContaining({ nextReqKey: 'cursor-1' }))
+    // Ascending order after sort.
+    expect(bars[0].timestamp.getTime()).toBeLessThan(bars[1].timestamp.getTime())
+  })
+
+  it('drops blank placeholder rows and rows missing OHLC instead of zero-filling', async () => {
+    const gateway = makeGateway({
+      requestHistoryKL: vi.fn(async () => ({
+        klList: [
+          { time: '2024-06-01 00:00:00', isBlank: true },
+          { ...KL_ROW, openPrice: undefined },
+          KL_ROW,
+        ],
+      })),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const bars = await broker.getHistorical(makeContract('HK.00700'), { interval: '1d' })
+    expect(bars).toHaveLength(1)
+  })
+
+  it('tail-slices to the most recent `limit` bars', async () => {
+    const rows = [1, 2, 3, 4, 5].map((d) => ({ ...KL_ROW, timestamp: 1_717_286_400 + d * 86_400 }))
+    const gateway = makeGateway({ requestHistoryKL: vi.fn(async () => ({ klList: rows })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const bars = await broker.getHistorical(makeContract('HK.00700'), { interval: '1d', limit: 2 })
+    expect(bars).toHaveLength(2)
+    expect(bars[1].timestamp).toEqual(new Date((1_717_286_400 + 5 * 86_400) * 1000))
+  })
+
+  it('wraps gateway failures as BrokerError', async () => {
+    const gateway = makeGateway({ requestHistoryKL: vi.fn(async () => { throw new Error('quota exceeded') }) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    await expect(broker.getHistorical(makeContract('HK.00700'), { interval: '1d' })).rejects.toThrow(/quota exceeded/)
   })
 })
 

@@ -1,0 +1,64 @@
+feat(futu): historical K-lines + fill push + real order fees (Increments A-B)
+
+First two increments of plans/futu-performance-loop.md — the measurement
+loop the maintainer asked for (win-rate/expectancy stats WITH real fees).
+This commit delivers the broker-boundary halves; the ledger/UI halves
+(Increments C-D) are written up as a detailed handoff spec in the plan
+file for the next agent session, per the maintainer's request.
+
+Increment A — historical K-lines (Qot_RequestHistoryKL, cmd 3103):
+- FutuGateway.requestHistoryKL: one page per wire call, nextReqKey
+  pagination cursor passed back verbatim; caller owns the loop.
+- FutuBroker.getHistorical: maps every BarInterval (all 8, incl.
+  4h -> KLType_240Min=15) onto Qot_Common.KLType, RehabType_Forward
+  (matching other brokers' adjusted-bar default), derives the REQUIRED
+  time window from `limit` when `start` is absent (interval x count x 3
+  calendar buffer for closed days), drops isBlank/OHLC-less placeholder
+  rows instead of zero-filling, sorts ascending, tail-slices to the most
+  recent `limit`. Pagination capped at 20 pages x 1000 rows.
+- getCapabilities now declares historicalBars { supported, quality:
+  'subscription', all 8 bar sizes } — 'subscription' because Futu data
+  rights follow the user's own account entitlements, and history pulls
+  are quota-limited on Futu's side.
+
+Increment B — fill push + real charged fees at the broker boundary:
+- subscribeOrderUpdates gained an optional onFill callback
+  (Trd_UpdateOrderFill push, cmd 2218, s2c.orderFill) — the same
+  Trd_SubAccPush registration covers it; restoreAfterReconnect already
+  re-registers after SDK auto-reconnects.
+- FutuBroker uses fill pushes to DELETE the affected cached order row
+  rather than merge: per-fill rows are deltas, and the next read re-pulls
+  the authoritative cumulative order state instead of guessing.
+- FutuGateway.getOrderFee wraps Trd_GetOrderFee (cmd 2225; wire field is
+  orderIdExList — server order ids, not numeric orderIDs; empty list
+  short-circuits without a wire call).
+- FutuBroker.getOrders/getOrder batch-fetch fees for fee-bearing rows
+  (FilledPart/FilledAll/CancelledPart) through an immutable feeCache
+  keyed by orderIDEx; toOpenOrder sets orderState.commissionAndFees and
+  commissionAndFeesCurrency (mapped from the row's currency enum) — the
+  IBKR-shaped fields that already exist on the protocol, so no contract
+  change at this layer. Fee lookup failure is non-fatal: fees are omitted
+  for that read and retried on the next one; absence is never rendered
+  as a fabricated 0 (UNSET_DOUBLE sentinel preserved).
+
+Testing: FutuBroker.spec.ts + FutuGatewayClient.spec.ts now total 92
+tests (14 new: KLType mapping for all 8 intervals, window derivation,
+pagination, blank-row dropping, tail-slice, quota-error wrapping, page
+cursor passthrough, fill-push delivery/ignoring/invalidations, fee
+enrichment + cache + skip-when-unfilled + non-fatal failure), all green
+against mocked gateways. Root npx tsc --noEmit clean. Same
+NOT-live-verified ceiling as every Futu increment: no FutuOpenD gateway
+or Futu account exists in this environment.
+
+plans/futu-performance-loop.md now records A/B as done and carries the
+full Increment C (fees into ledger: git.ts OrderStatusUpdate/
+OperationResult optional fee fields -> UnifiedTradingAccount sync copy
+guarded by UNSET_DOUBLE -> TradingGit.sync mapping -> history.ts +
+order-history.ts projection -> ui/src/api/types.ts mirrors) and
+Increment D (trade-stats pure lib with FIFO round-trip matching, fee
+coverage honesty marker, limit-order-only slippage, useTradeStats hook,
+UTADetailPage section, demo fixtures) handoff specs, including machine
+quirks and verification commands, so a fresh agent session can execute
+without re-deriving context. PLANS.md index updated to match.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

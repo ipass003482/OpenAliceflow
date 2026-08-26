@@ -32,6 +32,8 @@ const { FakeWs, getLastInstance } = vi.hoisted(() => {
     GetOrderList = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderList: [] } }))
     GetHistoryOrderList = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderList: [] } }))
     SubAccPush = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: {} }))
+    RequestHistoryKL = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { klList: [] } }))
+    GetOrderFee = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderFeeList: [] } }))
 
     constructor() {
       lastInstance = this
@@ -45,6 +47,7 @@ vi.mock('futu-api', () => ({
   ftCmdID: {
     QotUpdateBasicQot: { cmd: 3005, name: 'Qot_UpdateBasicQot', description: '推送基本行情' },
     TrdUpdateOrder: { cmd: 2208, name: 'Trd_UpdateOrder', description: '订单状态变动通知(推送)' },
+    TrdUpdateOrderFill: { cmd: 2218, name: 'Trd_UpdateOrderFill', description: '成交通知(推送)' },
   },
 }))
 
@@ -197,6 +200,27 @@ describe('FutuGatewayClient trading writes', () => {
     expect(await client.getOrderList(HEADER)).toEqual([])
   })
 
+  it('requestHistoryKL sends one Qot_RequestHistoryKL page and passes the cursor through', async () => {
+    const row = { time: '2024-06-03 00:00:00', isBlank: false, openPrice: 1, highPrice: 2, lowPrice: 0.5, closePrice: 1.5, volume: 10, timestamp: 1_717_372_800 }
+    const { client, ws } = await connectedClient()
+    ws.RequestHistoryKL.mockResolvedValueOnce({ retType: 0, s2c: { klList: [row], nextReqKey: 'cursor-9' } })
+
+    const page = await client.requestHistoryKL({
+      security: SEC_700, rehabType: 1, klType: 2,
+      beginTime: '2024-05-01 00:00:00', endTime: '2024-06-04 00:00:00', maxAckKLNum: 1000,
+    })
+
+    expect(page).toEqual({ klList: [row], nextReqKey: 'cursor-9' })
+    expect(ws.RequestHistoryKL).toHaveBeenCalledWith({
+      c2s: {
+        rehabType: 1, klType: 2, security: SEC_700,
+        beginTime: '2024-05-01 00:00:00', endTime: '2024-06-04 00:00:00', maxAckKLNum: 1000,
+      },
+    })
+    // Final page: no cursor key at all rather than an explicit undefined.
+    expect(await client.requestHistoryKL({ security: SEC_700, rehabType: 1, klType: 2, beginTime: 'a', endTime: 'b' })).toEqual({ klList: [] })
+  })
+
   it('getHistoryOrderList sends the required time window and optional idList', async () => {
     const row = { trdSide: 1, orderType: 1, orderStatus: 5, orderID: '900001', orderIDEx: 'ex', code: '00700', name: 'Tencent', qty: 100, createTime: '', updateTime: '' }
     const { client, ws } = await connectedClient()
@@ -239,6 +263,38 @@ describe('FutuGatewayClient trading writes', () => {
     const order = { trdSide: 1, orderType: 1, orderStatus: 11, orderID: '1', orderIDEx: '', code: '00700', name: '', qty: 1, createTime: '', updateTime: '' }
     // A push arriving after the failed registration must not reach the callback.
     expect(() => ws.onPush?.(2208, { s2c: { order } })).not.toThrow()
+  })
+
+  it('delivers Trd_UpdateOrderFill pushes to the fill callback', async () => {
+    const { client, ws } = await connectedClient()
+    const fills: unknown[] = []
+    await client.subscribeOrderUpdates('11111', () => {}, (fill) => fills.push(fill))
+
+    const orderFill = { trdSide: 1, fillID: '5001', orderID: '900001', orderIDEx: 'ex-900001', code: '00700', qty: 100, price: 320.4, createTime: '2024-06-03 10:00:00' }
+    ws.onPush?.(2218, { s2c: { orderFill } })
+    expect(fills).toEqual([orderFill])
+
+    // No fill callback registered → fill pushes are silently ignored.
+    await client.subscribeOrderUpdates('11111', () => {})
+    expect(() => ws.onPush?.(2218, { s2c: { orderFill } })).not.toThrow()
+    expect(fills).toHaveLength(1)
+  })
+
+  it('getOrderFee sends orderIdExList and returns fee rows', async () => {
+    const feeRow = { orderIDEx: 'ex-900001', feeAmount: 15.5, feeList: [{ title: '佣金', value: 15.5 }] }
+    const { client, ws } = await connectedClient()
+    ws.GetOrderFee.mockResolvedValueOnce({ retType: 0, s2c: { orderFeeList: [feeRow] } })
+
+    const fees = await client.getOrderFee(HEADER, ['ex-900001'])
+
+    expect(fees).toEqual([feeRow])
+    expect(ws.GetOrderFee).toHaveBeenCalledWith({ c2s: { header: HEADER, orderIdExList: ['ex-900001'] } })
+  })
+
+  it('getOrderFee short-circuits an empty id list without a wire call', async () => {
+    const { client, ws } = await connectedClient()
+    expect(await client.getOrderFee(HEADER, [])).toEqual([])
+    expect(ws.GetOrderFee).not.toHaveBeenCalled()
   })
 })
 

@@ -32,6 +32,9 @@ import {
   type MarketClock,
   type TpSlParams,
   type BrokerConnectionStateEvent,
+  type Bar,
+  type BarInterval,
+  type BarParams,
 } from '../types.js'
 import '../../contract-ext.js'
 import { buildPosition } from '../contract-builder.js'
@@ -53,11 +56,15 @@ import {
   FutuTrdEnv,
   FutuTrdMarket,
   FutuTrdSide,
+  FutuKLType,
+  FutuRehabType,
   type FutuConnectionEvent,
   type FutuGateway,
   type FutuGatewayFactory,
   type FutuGlobalStateLike,
+  type FutuKLineLike,
   type FutuOrderLike,
+  type FutuOrderFeeLike,
   type FutuTrdHeader,
 } from './futu-types.js'
 
@@ -151,6 +158,25 @@ function futuTimeString(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** BarInterval → Qot_Common.KLType. Every Alice interval has a Futu K-line type. */
+const FUTU_KLTYPE_BY_INTERVAL: Record<BarInterval, number> = {
+  '1m': FutuKLType.Min1, '5m': FutuKLType.Min5, '15m': FutuKLType.Min15, '30m': FutuKLType.Min30,
+  '1h': FutuKLType.Min60, '4h': FutuKLType.Min240, '1d': FutuKLType.Day, '1w': FutuKLType.Week,
+}
+
+/** BarInterval → interval duration (ms), for deriving a window from `limit`. */
+const INTERVAL_MS: Record<BarInterval, number> = {
+  '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
+  '1h': 3_600_000, '4h': 14_400_000, '1d': DAY_MS, '1w': 7 * DAY_MS,
+}
+
+/** Default bar count when the caller provides neither start nor limit. */
+const DEFAULT_BAR_LIMIT = 300
+/** Rows per Qot_RequestHistoryKL page. */
+const HISTORY_KL_PAGE_SIZE = 1000
+/** Safety cap on pagination — 20k bars is beyond any BarParams use today. */
+const HISTORY_KL_MAX_PAGES = 20
+
 /** Default factory — loads the real WebSocket gateway lazily so unit tests
  *  that inject a fake never evaluate the `futu-api` SDK. */
 const defaultGatewayFactory: FutuGatewayFactory = async (config) => {
@@ -222,6 +248,12 @@ export class FutuBroker implements IBroker {
    * while disconnected would otherwise leave silently stale entries.
    */
   private readonly orderCache = new Map<string, FutuOrderLike>()
+  /**
+   * Real charged fees keyed by server order id (orderIDEx), from
+   * Trd_GetOrderFee. Fees are immutable once charged, so entries survive
+   * transport interruptions; only a fresh init() (new gateway) clears them.
+   */
+  private readonly feeCache = new Map<string, FutuOrderFeeLike>()
   private connectionListener: ((event: BrokerConnectionStateEvent) => void) | null = null
 
   constructor(cfg: z.infer<typeof FutuBroker.configSchema> & { id?: string; label?: string }, gatewayFactory?: FutuGatewayFactory) {
@@ -240,6 +272,7 @@ export class FutuBroker implements IBroker {
     this.gateway?.setConnectionListener(null)
     this.gateway?.stop()
     this.orderCache.clear()
+    this.feeCache.clear()
 
     try {
       this.gateway = await this.gatewayFactory({ host: this.cfg.host, port: this.cfg.port, ssl: this.cfg.ssl, wsKey: this.cfg.wsKey })
@@ -267,12 +300,20 @@ export class FutuBroker implements IBroker {
     await this.unlockIfConfigured()
 
     // Order-update push (Trd_SubAccPush → Trd_UpdateOrder) keeps the order
-    // cache fresh without polling. Non-fatal: the getOrderList/history
-    // polling paths still work without it.
+    // cache fresh without polling; fill pushes (Trd_UpdateOrderFill) drop
+    // the affected cached row instead of merging — per-fill rows are deltas,
+    // the next lookup re-pulls the authoritative cumulative order state.
+    // Non-fatal: the getOrderList/history polling paths work without it.
     try {
-      await this.gateway.subscribeOrderUpdates(this.header.accID, (order) => {
-        this.orderCache.set(String(order.orderID), order)
-      })
+      await this.gateway.subscribeOrderUpdates(
+        this.header.accID,
+        (order) => {
+          this.orderCache.set(String(order.orderID), order)
+        },
+        (fill) => {
+          if (fill.orderID !== undefined) this.orderCache.delete(String(fill.orderID))
+        },
+      )
     } catch (err) {
       console.warn(`FutuBroker[${this.id}]: order-update push subscription failed — order tracking falls back to polling: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -511,12 +552,40 @@ export class FutuBroker implements IBroker {
 
   async getOrders(orderIds: string[]): Promise<OpenOrder[]> {
     const rows = await this.lookupOrders(orderIds)
+    await this.enrichFees(rows)
     return rows.map((o) => this.toOpenOrder(o))
   }
 
   async getOrder(orderId: string, _symbolHint?: string): Promise<OpenOrder | null> {
     const rows = await this.lookupOrders([orderId])
-    return rows.length ? this.toOpenOrder(rows[0]) : null
+    if (!rows.length) return null
+    await this.enrichFees(rows)
+    return this.toOpenOrder(rows[0])
+  }
+
+  /** Order statuses that can carry real charged fees (some fill happened). */
+  private static readonly FEE_BEARING_STATUSES: ReadonlySet<number> = new Set([
+    FutuOrderStatus.FilledPart, FutuOrderStatus.FilledAll, FutuOrderStatus.CancelledPart,
+  ])
+
+  /**
+   * Batch-fetch Trd_GetOrderFee for fee-bearing rows not yet cached.
+   * Non-fatal by design: fee enrichment is additive — order rows stay
+   * correct without it, and a failed lookup is retried on the next read.
+   */
+  private async enrichFees(rows: FutuOrderLike[]): Promise<void> {
+    const wanted = [...new Set(
+      rows
+        .filter((o) => o.orderIDEx && FutuBroker.FEE_BEARING_STATUSES.has(o.orderStatus) && !this.feeCache.has(o.orderIDEx))
+        .map((o) => o.orderIDEx),
+    )]
+    if (wanted.length === 0) return
+    try {
+      const fees = await this.gateway.getOrderFee(this.header, wanted)
+      for (const fee of fees) this.feeCache.set(fee.orderIDEx, fee)
+    } catch (err) {
+      console.warn(`FutuBroker[${this.id}]: order-fee lookup failed (fees omitted this read): ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /**
@@ -594,6 +663,13 @@ export class FutuBroker implements IBroker {
     const orderState = new OrderState()
     orderState.status = IBKR_STATUS_BY_FUTU[o.orderStatus] ?? 'Submitted'
     if (o.lastErrMsg) orderState.rejectReason = o.lastErrMsg
+    // Real charged fees (Trd_GetOrderFee), when the batch lookup has them.
+    const fee = this.feeCache.get(o.orderIDEx)
+    if (fee?.feeAmount !== undefined) {
+      orderState.commissionAndFees = fee.feeAmount
+      const currency = o.currency !== undefined ? FUTU_CURRENCY_CODES[o.currency] : undefined
+      if (currency) orderState.commissionAndFeesCurrency = currency
+    }
 
     return {
       contract,
@@ -676,6 +752,64 @@ export class FutuBroker implements IBroker {
     return { isOpen: marketState !== undefined && FUTU_OPEN_MARKET_STATES.has(marketState), timestamp: new Date() }
   }
 
+  /**
+   * Historical OHLCV via Qot_RequestHistoryKL (forward-adjusted, matching
+   * other brokers' adjusted-bar default). The wire pull is quota-limited on
+   * Futu's side and requires an explicit time window, so one is derived
+   * from `limit` when the caller omits `start` (interval × count × 3 —
+   * calendar buffer for closed days). `whatToShow` non-TRADES values are
+   * ignored, same as every broker except IBKR. Blank placeholder rows
+   * (isBlank — time-only, no OHLCV) are dropped rather than zero-filled.
+   */
+  async getHistorical(contract: Contract, params: BarParams): Promise<Bar[]> {
+    const key = resolveFutuKey(contract)
+    if (!key) throw new BrokerError('EXCHANGE', 'Cannot resolve contract to a Futu market/code key')
+    const klType = FUTU_KLTYPE_BY_INTERVAL[params.interval]
+    if (klType === undefined) throw new BrokerError('CONFIG', `Unsupported bar interval for Futu: ${params.interval}`)
+
+    const end = params.end ?? new Date()
+    const count = params.limit ?? DEFAULT_BAR_LIMIT
+    const start = params.start ?? new Date(end.getTime() - Math.max(INTERVAL_MS[params.interval] * count * 3, DAY_MS))
+
+    const rows: FutuKLineLike[] = []
+    let nextReqKey: unknown
+    try {
+      for (let page = 0; page < HISTORY_KL_MAX_PAGES; page++) {
+        const result = await this.gateway.requestHistoryKL({
+          security: keyToSecurity(key),
+          rehabType: FutuRehabType.Forward,
+          klType,
+          beginTime: futuTimeString(start),
+          endTime: futuTimeString(end),
+          maxAckKLNum: HISTORY_KL_PAGE_SIZE,
+          ...(nextReqKey !== undefined ? { nextReqKey } : {}),
+        })
+        rows.push(...result.klList)
+        if (result.nextReqKey === undefined) break
+        nextReqKey = result.nextReqKey
+      }
+    } catch (err) {
+      throw BrokerError.from(err)
+    }
+
+    const bars: Bar[] = []
+    for (const k of rows) {
+      if (k.isBlank) continue
+      if (k.openPrice === undefined || k.highPrice === undefined || k.lowPrice === undefined || k.closePrice === undefined) continue
+      bars.push({
+        timestamp: k.timestamp ? new Date(k.timestamp * 1000) : new Date(k.time),
+        open: dec(k.openPrice),
+        high: dec(k.highPrice),
+        low: dec(k.lowPrice),
+        close: dec(k.closePrice),
+        volume: new Decimal(String(k.volume ?? 0)).toString(),
+      })
+    }
+    bars.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+    // BarParams.limit means "most recent N" — tail-slice after sorting.
+    return params.limit && bars.length > params.limit ? bars.slice(bars.length - params.limit) : bars
+  }
+
   private marketStateFor(state: FutuGlobalStateLike): number | undefined {
     switch (this.cfg.trdMarket) {
       case 'HK': return state.marketHK
@@ -691,7 +825,17 @@ export class FutuBroker implements IBroker {
   // ---- Capabilities ----
 
   getCapabilities(): AccountCapabilities {
-    return { supportedSecTypes: ['STK'], supportedOrderTypes: ['MKT', 'LMT', 'STP', 'STP LMT'] }
+    return {
+      supportedSecTypes: ['STK'],
+      supportedOrderTypes: ['MKT', 'LMT', 'STP', 'STP LMT'],
+      // 'subscription': Futu bar quality/entitlement follows the rights the
+      // user's own account carries (and history pulls are quota-limited).
+      historicalBars: {
+        supported: true,
+        quality: 'subscription',
+        supportedBarSizes: ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'],
+      },
+    }
   }
 
   // ---- Contract identity ----
