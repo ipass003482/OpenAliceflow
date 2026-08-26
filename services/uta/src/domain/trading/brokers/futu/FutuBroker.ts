@@ -31,6 +31,7 @@ import {
   type Quote,
   type MarketClock,
   type TpSlParams,
+  type BrokerConnectionStateEvent,
 } from '../types.js'
 import '../../contract-ext.js'
 import { buildPosition } from '../contract-builder.js'
@@ -52,6 +53,7 @@ import {
   FutuTrdEnv,
   FutuTrdMarket,
   FutuTrdSide,
+  type FutuConnectionEvent,
   type FutuGateway,
   type FutuGatewayFactory,
   type FutuGlobalStateLike,
@@ -131,6 +133,24 @@ const BASE_CURRENCY_BY_MARKET: Record<string, string> = {
   HK: 'HKD', US: 'USD', CN: 'CNH', SG: 'SGD', JP: 'JPY',
 }
 
+/**
+ * How far back getOrders/getOrder searches Trd_GetHistoryOrderList when an
+ * order id is not in today's Trd_GetOrderList (e.g. an overnight GTC order).
+ * One month, per the maintainer's explicit request.
+ */
+const ORDER_HISTORY_LOOKBACK_DAYS = 30
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * `YYYY-MM-DD HH:MM:SS` — the strict format TrdFilterConditions requires.
+ * Uses local machine time: the proto does not document a timezone, and
+ * FutuOpenD runs on the same machine, so local time is the sane default.
+ */
+function futuTimeString(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 /** Default factory — loads the real WebSocket gateway lazily so unit tests
  *  that inject a fake never evaluate the `futu-api` SDK. */
 const defaultGatewayFactory: FutuGatewayFactory = async (config) => {
@@ -195,6 +215,14 @@ export class FutuBroker implements IBroker {
   private readonly gatewayFactory: FutuGatewayFactory
   private gateway!: FutuGateway
   private header!: FutuTrdHeader
+  /**
+   * Push-fresh order rows keyed by String(orderID), fed by Trd_UpdateOrder
+   * pushes. A cache hit means "the last thing FutuOpenD told us about this
+   * order" — cleared on any transport interruption, because pushes missed
+   * while disconnected would otherwise leave silently stale entries.
+   */
+  private readonly orderCache = new Map<string, FutuOrderLike>()
+  private connectionListener: ((event: BrokerConnectionStateEvent) => void) | null = null
 
   constructor(cfg: z.infer<typeof FutuBroker.configSchema> & { id?: string; label?: string }, gatewayFactory?: FutuGatewayFactory) {
     this.cfg = cfg
@@ -206,12 +234,20 @@ export class FutuBroker implements IBroker {
   // ---- Lifecycle ----
 
   async init(): Promise<void> {
+    // The recovery loop re-runs init() without calling close() first. Stop
+    // any previous gateway so its SDK-internal auto-reconnect loop can't
+    // keep a zombie connection (and its push subscriptions) alive.
+    this.gateway?.setConnectionListener(null)
+    this.gateway?.stop()
+    this.orderCache.clear()
+
     try {
       this.gateway = await this.gatewayFactory({ host: this.cfg.host, port: this.cfg.port, ssl: this.cfg.ssl, wsKey: this.cfg.wsKey })
       await this.gateway.connect()
     } catch (err) {
       throw new BrokerError('NETWORK', `Cannot connect to FutuOpenD at ${this.cfg.host}:${this.cfg.port} — is the gateway running and logged in? ${err instanceof Error ? err.message : String(err)}`)
     }
+    this.gateway.setConnectionListener((event) => this.handleGatewayConnectionEvent(event))
 
     const state = await this.gateway.getGlobalState()
     if (!state.trdLogined) {
@@ -228,24 +264,58 @@ export class FutuBroker implements IBroker {
     }
     this.header = { trdEnv: wantEnv, accID: String(chosen.accID), trdMarket: wantMarket }
 
-    if (this.cfg.tradePassword) {
-      try {
-        const pwdMD5 = createHash('md5').update(this.cfg.tradePassword).digest('hex')
-        await this.gateway.unlockTrade(pwdMD5)
-        console.log(`FutuBroker[${this.id}]: trade unlocked`)
-      } catch (err) {
-        // Non-fatal: reads (quotes/positions/funds) don't need trade unlock.
-        // If unlock genuinely failed (wrong password), it resurfaces the
-        // moment an order write is attempted — FutuOpenD itself rejects it.
-        console.warn(`FutuBroker[${this.id}]: trade unlock failed — order writes will fail until this is resolved: ${err instanceof Error ? err.message : String(err)}`)
-      }
+    await this.unlockIfConfigured()
+
+    // Order-update push (Trd_SubAccPush → Trd_UpdateOrder) keeps the order
+    // cache fresh without polling. Non-fatal: the getOrderList/history
+    // polling paths still work without it.
+    try {
+      await this.gateway.subscribeOrderUpdates(this.header.accID, (order) => {
+        this.orderCache.set(String(order.orderID), order)
+      })
+    } catch (err) {
+      console.warn(`FutuBroker[${this.id}]: order-update push subscription failed — order tracking falls back to polling: ${err instanceof Error ? err.message : String(err)}`)
     }
 
     console.log(`FutuBroker[${this.id}]: connected (env=${this.cfg.trdEnv}, market=${this.cfg.trdMarket}, accID=${this.header.accID})`)
   }
 
+  private async unlockIfConfigured(): Promise<void> {
+    if (!this.cfg.tradePassword) return
+    try {
+      const pwdMD5 = createHash('md5').update(this.cfg.tradePassword).digest('hex')
+      await this.gateway.unlockTrade(pwdMD5)
+      console.log(`FutuBroker[${this.id}]: trade unlocked`)
+    } catch (err) {
+      // Non-fatal: reads (quotes/positions/funds) don't need trade unlock.
+      // If unlock genuinely failed (wrong password), it resurfaces the
+      // moment an order write is attempted — FutuOpenD itself rejects it.
+      console.warn(`FutuBroker[${this.id}]: trade unlock failed — order writes will fail until this is resolved: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  private handleGatewayConnectionEvent(event: FutuConnectionEvent): void {
+    // Pushes were interrupted either way — cached order rows may be stale.
+    this.orderCache.clear()
+    if (event.state === 'restored') {
+      // The SDK reconnected to an OpenD at the same address. If OpenD itself
+      // restarted, its unlock state is gone — re-unlock is idempotent and
+      // cheap, so always re-run it rather than guessing.
+      void this.unlockIfConfigured()
+      this.connectionListener?.({ state: 'restored' })
+      return
+    }
+    this.connectionListener?.({ state: 'dead', error: event.error })
+  }
+
+  setConnectionStateListener(listener: ((event: BrokerConnectionStateEvent) => void) | null): void {
+    this.connectionListener = listener
+  }
+
   async close(): Promise<void> {
+    this.gateway?.setConnectionListener(null)
     this.gateway?.stop()
+    this.orderCache.clear()
   }
 
   // ---- Contract search (SearchingCatalog model — echo + static-info) ----
@@ -439,25 +509,68 @@ export class FutuBroker implements IBroker {
     return out
   }
 
-  async getOrders(_orderIds: string[]): Promise<OpenOrder[]> {
-    let rows: FutuOrderLike[]
-    try {
-      rows = await this.gateway.getOrderList(this.header)
-    } catch (err) {
-      throw BrokerError.from(err)
-    }
+  async getOrders(orderIds: string[]): Promise<OpenOrder[]> {
+    const rows = await this.lookupOrders(orderIds)
     return rows.map((o) => this.toOpenOrder(o))
   }
 
   async getOrder(orderId: string, _symbolHint?: string): Promise<OpenOrder | null> {
-    let rows: FutuOrderLike[]
-    try {
-      rows = await this.gateway.getOrderList(this.header)
-    } catch (err) {
-      throw BrokerError.from(err)
+    const rows = await this.lookupOrders([orderId])
+    return rows.length ? this.toOpenOrder(rows[0]) : null
+  }
+
+  /**
+   * Resolve order ids through three tiers, stopping as soon as every id is
+   * found: (1) the push-fresh order cache, (2) today's Trd_GetOrderList,
+   * (3) Trd_GetHistoryOrderList over the past ORDER_HISTORY_LOOKBACK_DAYS.
+   * Tier 3 exists because Trd_GetOrderList only covers TODAY — without it an
+   * overnight GTC order becomes untrackable the morning after placement.
+   * Unresolved ids are dropped (same contract as AlpacaBroker.getOrders).
+   */
+  private async lookupOrders(orderIds: string[]): Promise<FutuOrderLike[]> {
+    const found = new Map<string, FutuOrderLike>()
+    const missing = new Set<string>()
+    for (const id of orderIds) {
+      const hit = this.orderCache.get(id)
+      if (hit) found.set(id, hit)
+      else missing.add(id)
     }
-    const match = rows.find((o) => String(o.orderID) === orderId)
-    return match ? this.toOpenOrder(match) : null
+
+    if (missing.size > 0) {
+      let today: FutuOrderLike[]
+      try {
+        today = await this.gateway.getOrderList(this.header)
+      } catch (err) {
+        throw BrokerError.from(err)
+      }
+      for (const o of today) {
+        const id = String(o.orderID)
+        if (missing.delete(id)) found.set(id, o)
+      }
+    }
+
+    if (missing.size > 0) {
+      const now = Date.now()
+      let history: FutuOrderLike[]
+      try {
+        history = await this.gateway.getHistoryOrderList(this.header, {
+          beginTime: futuTimeString(new Date(now - ORDER_HISTORY_LOOKBACK_DAYS * DAY_MS)),
+          // One day of forward slack absorbs OpenD/server clock skew.
+          endTime: futuTimeString(new Date(now + DAY_MS)),
+          idList: [...missing],
+        })
+      } catch (err) {
+        throw BrokerError.from(err)
+      }
+      for (const o of history) {
+        const id = String(o.orderID)
+        if (missing.delete(id)) found.set(id, o)
+      }
+    }
+
+    return orderIds
+      .map((id) => found.get(id))
+      .filter((o): o is FutuOrderLike => o !== undefined)
   }
 
   /** Trd_Common.Order → OpenOrder (IBKR-shaped Order + OrderState), for getOrders/getOrder. */

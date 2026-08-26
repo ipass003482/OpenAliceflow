@@ -32,6 +32,8 @@ import {
   type FutuOrderLike,
   type FutuPlaceOrderParams,
   type FutuModifyOrderParams,
+  type FutuFilterConditions,
+  type FutuConnectionEvent,
   type FutuLongLike,
   FutuSubType,
 } from './futu-types.js'
@@ -41,6 +43,12 @@ const CONNECT_TIMEOUT_MS = 20_000
 /** `${market}.${code}` — a stable dedupe/lookup key for a wire Security. */
 function securityKey(s: FutuSecurity): string {
   return `${s.market}.${s.code}`
+}
+
+/** Reverse of securityKey — the market prefix never contains a dot. */
+function keyToWireSecurity(key: string): FutuSecurity {
+  const dot = key.indexOf('.')
+  return { market: Number(key.slice(0, dot)), code: key.slice(dot + 1) }
 }
 
 interface QuoteSubscription {
@@ -53,6 +61,14 @@ export class FutuGatewayClient implements FutuGateway {
   private ws: ftWebsocket | null = null
   private nextSubscriptionId = 1
   private readonly quoteSubscriptions = new Map<number, QuoteSubscription>()
+  private connectionListener: ((event: FutuConnectionEvent) => void) | null = null
+  private orderPush: { accID: FutuLongLike; onUpdate: (order: FutuOrderLike) => void } | null = null
+  /** True during a deliberate stop() — suppresses dead-connection events. */
+  private stopping = false
+  /** Set once the FIRST login handshake settles; later onlogin(true) calls
+   *  come from the SDK base's built-in auto-reconnect (base.js re-runs
+   *  initWebSocket after a non-deliberate socket close). */
+  private loggedInOnce = false
 
   constructor(cfg: FutuGatewayConfig) {
     this.cfg = cfg
@@ -61,24 +77,91 @@ export class FutuGatewayClient implements FutuGateway {
   async connect(): Promise<void> {
     const ws = new ftWebsocket()
     this.ws = ws
+    this.stopping = false
+    this.loggedInOnce = false
     ws.onPush = (cmd, response) => this.handlePush(cmd, response)
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error(`FutuOpenD connect timed out after ${CONNECT_TIMEOUT_MS}ms (${this.cfg.host}:${this.cfg.port})`))
       }, CONNECT_TIMEOUT_MS)
       ws.onlogin = (ret, msg) => {
-        clearTimeout(timer)
-        if (ret) resolve()
-        else reject(new Error(`FutuOpenD login failed: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`))
+        if (!this.loggedInOnce) {
+          this.loggedInOnce = true
+          clearTimeout(timer)
+          if (ret) resolve()
+          else reject(new Error(`FutuOpenD login failed: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`))
+          return
+        }
+        // A later successful login means the SDK auto-reconnected after a
+        // dropped socket. Wire-level subscriptions died with the old socket,
+        // so rebuild them before telling the owner the transport is back.
+        if (ret && !this.stopping) void this.restoreAfterReconnect()
       }
       ws.start(this.cfg.host, this.cfg.port, this.cfg.ssl, this.cfg.wsKey ?? null)
     })
+    this.attachTransportHooks(ws)
   }
 
   stop(): void {
+    this.stopping = true
     this.ws?.stop()
     this.ws = null
     this.quoteSubscriptions.clear()
+    this.orderPush = null
+  }
+
+  setConnectionListener(listener: ((event: FutuConnectionEvent) => void) | null): void {
+    this.connectionListener = listener
+  }
+
+  /**
+   * The wrapper ftWebsocket does not forward the base transport's
+   * onclose/onerror user hooks, so connection-loss detection attaches to the
+   * base directly (`ws.websock`). The hook survives the base's internal
+   * reconnect cycles — initWebSocket re-runs but the base instance persists.
+   */
+  private attachTransportHooks(ws: ftWebsocket): void {
+    const base = ws.websock
+    if (!base) return
+    base.onclose = () => {
+      if (this.stopping) return
+      this.connectionListener?.({ state: 'dead', error: 'FutuOpenD WebSocket closed unexpectedly (SDK auto-reconnect is running)' })
+    }
+  }
+
+  /** Re-establish every wire subscription on the freshly reconnected socket. */
+  private async restoreAfterReconnect(): Promise<void> {
+    const ws = this.ws
+    if (!ws) return
+    try {
+      const wanted = new Map<string, FutuSecurity>()
+      for (const sub of this.quoteSubscriptions.values()) {
+        for (const key of sub.securities) {
+          if (!wanted.has(key)) wanted.set(key, keyToWireSecurity(key))
+        }
+      }
+      if (wanted.size > 0) {
+        await ws.Sub({
+          c2s: {
+            securityList: [...wanted.values()],
+            subTypeList: [FutuSubType.Basic],
+            isSubOrUnSub: true,
+            isRegOrUnRegPush: true,
+          },
+        })
+      }
+      if (this.orderPush) {
+        await ws.SubAccPush({ c2s: { accIDList: [this.orderPush.accID] } })
+      }
+      this.connectionListener?.({ state: 'restored' })
+    } catch (err) {
+      // The socket may have dropped again mid-restore. Report dead so the
+      // owning account's recovery loop rebuilds the whole broker.
+      this.connectionListener?.({
+        state: 'dead',
+        error: `Re-subscribe after FutuOpenD reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
   }
 
   async getGlobalState(): Promise<FutuGlobalStateLike> {
@@ -156,6 +239,40 @@ export class FutuGatewayClient implements FutuGateway {
     return this.s2c<{ orderList?: FutuOrderLike[] }>(resp, 'GetOrderList').orderList ?? []
   }
 
+  /** Trd_GetHistoryOrderList — orders inside the filter's required time window. */
+  async getHistoryOrderList(header: FutuTrdHeader, filter: FutuFilterConditions): Promise<FutuOrderLike[]> {
+    const resp = await this.require().GetHistoryOrderList({
+      c2s: {
+        header,
+        filterConditions: {
+          beginTime: filter.beginTime,
+          endTime: filter.endTime,
+          ...(filter.idList ? { idList: filter.idList } : {}),
+          ...(filter.codeList ? { codeList: filter.codeList } : {}),
+        },
+      },
+    })
+    return this.s2c<{ orderList?: FutuOrderLike[] }>(resp, 'GetHistoryOrderList').orderList ?? []
+  }
+
+  /**
+   * Trd_SubAccPush registers this connection for Trd_UpdateOrder pushes.
+   * accIDList is full-replacement on the wire (per the proto comment), but
+   * this adapter only ever drives one business account per connection, so a
+   * single registration slot suffices. Re-registered automatically by
+   * restoreAfterReconnect after the SDK's internal transport reconnect.
+   */
+  async subscribeOrderUpdates(accID: FutuLongLike, onUpdate: (order: FutuOrderLike) => void): Promise<void> {
+    const ws = this.require()
+    this.orderPush = { accID, onUpdate }
+    try {
+      await ws.SubAccPush({ c2s: { accIDList: [accID] } })
+    } catch (err) {
+      this.orderPush = null
+      throw err
+    }
+  }
+
   /**
    * Subscribe to Qot_UpdateBasicQot push (Qot_Sub, SubType_Basic). Multiple
    * concurrent subscriptions share the single underlying `ftWebsocket`
@@ -208,7 +325,12 @@ export class FutuGatewayClient implements FutuGateway {
   }
 
   private handlePush(cmd: number, response: unknown): void {
-    if (cmd !== ftCmdID['QotUpdateBasicQot'].cmd) return
+    if (cmd === ftCmdID['TrdUpdateOrder']?.cmd) {
+      const order = (response as { s2c?: { order?: FutuOrderLike } } | undefined)?.s2c?.order
+      if (order) this.orderPush?.onUpdate(order)
+      return
+    }
+    if (cmd !== ftCmdID['QotUpdateBasicQot']?.cmd) return
     const rows = (response as { s2c?: { basicQotList?: FutuBasicQotLike[] } } | undefined)?.s2c?.basicQotList
     if (!rows || rows.length === 0) return
     for (const sub of this.quoteSubscriptions.values()) {

@@ -31,6 +31,9 @@ function makeGateway(overrides: Partial<FutuGateway> = {}): FutuGateway {
     placeOrder: vi.fn(async () => ({ orderID: '900000001' })),
     modifyOrder: vi.fn(async () => ({ orderID: '900000001' })),
     getOrderList: vi.fn(async () => []),
+    getHistoryOrderList: vi.fn(async () => []),
+    subscribeOrderUpdates: vi.fn(async () => {}),
+    setConnectionListener: vi.fn(),
     ...overrides,
   }
 }
@@ -530,6 +533,135 @@ describe('FutuBroker.getOrders / getOrder', () => {
     await broker.init()
     const orders = await broker.getOrders(['77001'])
     expect(orders[0].orderState.status).toBe('Filled')
+  })
+
+  it('falls back to a 1-month Trd_GetHistoryOrderList window for orders missing from today\'s list', async () => {
+    const overnight = { ...ORDER_ROW, orderID: '66001' }
+    const gateway = makeGateway({
+      getOrderList: vi.fn(async () => []),
+      getHistoryOrderList: vi.fn(async () => [overnight]),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    const order = await broker.getOrder('66001')
+    expect(order?.orderId).toBe('66001')
+
+    expect(gateway.getHistoryOrderList).toHaveBeenCalledWith(
+      { trdEnv: 0, accID: '11111', trdMarket: 1 },
+      expect.objectContaining({
+        idList: ['66001'],
+        beginTime: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+        endTime: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+      }),
+    )
+    // The window really is ~one month wide.
+    const [, filter] = (gateway.getHistoryOrderList as ReturnType<typeof vi.fn>).mock.calls[0]
+    const spanDays = (new Date(filter.endTime).getTime() - new Date(filter.beginTime).getTime()) / 86_400_000
+    expect(spanDays).toBeGreaterThanOrEqual(30)
+    expect(spanDays).toBeLessThanOrEqual(32)
+  })
+
+  it('skips the history call entirely when today\'s list already resolves every id', async () => {
+    const gateway = makeGateway({ getOrderList: vi.fn(async () => [ORDER_ROW]) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    await broker.getOrders(['77001'])
+    expect(gateway.getHistoryOrderList).not.toHaveBeenCalled()
+  })
+
+  it('serves pushed order updates from the cache without touching the wire', async () => {
+    let push: ((order: (typeof ORDER_ROW)) => void) | undefined
+    const gateway = makeGateway({
+      subscribeOrderUpdates: vi.fn(async (_accID: unknown, onUpdate: (order: typeof ORDER_ROW) => void) => { push = onUpdate }),
+      getOrderList: vi.fn(async () => []),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+
+    push!({ ...ORDER_ROW, orderStatus: 11 })
+    const order = await broker.getOrder('77001')
+
+    expect(order?.orderState.status).toBe('Filled')
+    expect(gateway.getOrderList).not.toHaveBeenCalled()
+    expect(gateway.getHistoryOrderList).not.toHaveBeenCalled()
+  })
+})
+
+// ==================== Connection state ====================
+
+describe('FutuBroker connection state', () => {
+  const ORDER_ROW = {
+    trdSide: 1, orderType: 1, orderStatus: 5, orderID: '77001', orderIDEx: 'ex-1',
+    code: '00700', name: 'Tencent', qty: 100, createTime: '', updateTime: '', secMarket: 1,
+  }
+
+  function makeConnectableGateway(overrides: Parameters<typeof makeGateway>[0] = {}) {
+    let listener: ((event: { state: 'dead' | 'restored'; error?: string }) => void) | null = null
+    const gateway = makeGateway({
+      setConnectionListener: vi.fn((l: ((event: { state: 'dead' | 'restored'; error?: string }) => void) | null) => { listener = l }),
+      ...overrides,
+    })
+    return { gateway, fire: (event: { state: 'dead' | 'restored'; error?: string }) => listener?.(event) }
+  }
+
+  it('forwards gateway dead events to the registered IBroker listener', async () => {
+    const { gateway, fire } = makeConnectableGateway()
+    const broker = makeBroker(gateway)
+    const events: unknown[] = []
+    broker.setConnectionStateListener((e) => events.push(e))
+    await broker.init()
+
+    fire({ state: 'dead', error: 'socket closed' })
+
+    expect(events).toEqual([{ state: 'dead', error: 'socket closed' }])
+  })
+
+  it('forwards restored events and re-runs trade unlock (OpenD may have restarted)', async () => {
+    const { gateway, fire } = makeConnectableGateway()
+    const parsed = FutuBroker.configSchema.parse({ trdEnv: 'simulate', trdMarket: 'HK', tradePassword: 'hunter2' })
+    const broker = new FutuBroker({ ...parsed, id: 'futu-test' }, () => gateway)
+    const events: unknown[] = []
+    broker.setConnectionStateListener((e) => events.push(e))
+    await broker.init()
+    expect(gateway.unlockTrade).toHaveBeenCalledTimes(1)
+
+    fire({ state: 'restored' })
+    await vi.waitFor(() => expect(gateway.unlockTrade).toHaveBeenCalledTimes(2))
+    expect(events).toEqual([{ state: 'restored' }])
+  })
+
+  it('clears the push cache on any transport interruption', async () => {
+    let push: ((order: typeof ORDER_ROW) => void) | undefined
+    const { gateway, fire } = makeConnectableGateway({
+      subscribeOrderUpdates: vi.fn(async (_accID: unknown, onUpdate: (order: typeof ORDER_ROW) => void) => { push = onUpdate }),
+      getOrderList: vi.fn(async () => []),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    push!(ORDER_ROW)
+
+    fire({ state: 'dead', error: 'gone' })
+
+    // Cache no longer trusted — the lookup must go back to the wire.
+    expect(await broker.getOrder('77001')).toBeNull()
+    expect(gateway.getOrderList).toHaveBeenCalled()
+  })
+
+  it('re-running init stops the previous gateway so no zombie connection survives recovery', async () => {
+    const gateway = makeGateway()
+    const broker = makeBroker(gateway)
+    await broker.init()
+    await broker.init()
+    expect(gateway.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('order-push subscription failure is non-fatal (polling still works)', async () => {
+    const gateway = makeGateway({
+      subscribeOrderUpdates: vi.fn(async () => { throw new Error('SubAccPush rejected') }),
+    })
+    const broker = makeBroker(gateway)
+    await expect(broker.init()).resolves.toBeUndefined()
   })
 })
 

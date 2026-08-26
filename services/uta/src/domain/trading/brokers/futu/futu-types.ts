@@ -261,6 +261,25 @@ export interface FutuModifyOrderParams {
   auxPrice?: number
 }
 
+/**
+ * Trd_Common.TrdFilterConditions (subset used by Trd_GetHistoryOrderList).
+ * beginTime/endTime are REQUIRED by the wire for history pulls, strict
+ * `YYYY-MM-DD HH:MM:SS` format per the proto comment. idList filters by
+ * orderID primary key.
+ */
+export interface FutuFilterConditions {
+  beginTime: string
+  endTime: string
+  idList?: FutuLongLike[]
+  codeList?: string[]
+}
+
+/** Connection-transport event surfaced by FutuGatewayClient (see FutuGateway). */
+export interface FutuConnectionEvent {
+  state: 'dead' | 'restored'
+  error?: string
+}
+
 // ==================== Gateway abstraction ====================
 
 export interface FutuGatewayConfig {
@@ -307,6 +326,28 @@ export interface FutuGateway {
   modifyOrder(params: FutuModifyOrderParams): Promise<{ orderID: FutuLongLike }>
   /** Trd_GetOrderList — today's orders for this trade header. */
   getOrderList(header: FutuTrdHeader): Promise<FutuOrderLike[]>
+  /**
+   * Trd_GetHistoryOrderList — orders inside `filter`'s (required)
+   * beginTime/endTime window, optionally narrowed to specific orderIDs via
+   * `filter.idList`. Needed because Trd_GetOrderList only covers TODAY —
+   * an overnight GTC order is only findable through this history path.
+   */
+  getHistoryOrderList(header: FutuTrdHeader, filter: FutuFilterConditions): Promise<FutuOrderLike[]>
+  /**
+   * Trd_SubAccPush + Trd_UpdateOrder push — register `accID` for order-update
+   * push (the accIDList is full-replacement per the proto, but this adapter
+   * only ever drives one business account per connection). `onUpdate` fires
+   * once per pushed order-state change. The registration is re-established
+   * automatically after the SDK's internal transport reconnect.
+   */
+  subscribeOrderUpdates(accID: FutuLongLike, onUpdate: (order: FutuOrderLike) => void): Promise<void>
+  /**
+   * Transport-state notification: `dead` when the underlying WebSocket
+   * closes unexpectedly, `restored` after the SDK's built-in auto-reconnect
+   * has re-logged-in AND this client has re-established its wire
+   * subscriptions (quote + order push). One listener slot; pass null to clear.
+   */
+  setConnectionListener(listener: ((event: FutuConnectionEvent) => void) | null): void
 }
 
 

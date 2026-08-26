@@ -226,6 +226,46 @@ Scope, grounded in the same bundled `.proto` files as Increment 1
   default) and confirm behavior there — including that the account stays in
   the expected state — before ever configuring `trdEnv: 'real'`.
 
+### Increment 2 follow-up hardening (maintainer-directed)
+
+Three gaps identified in a post-implementation self-review, each fixed on
+maintainer request:
+
+- **1-month order-history window.** `Trd_GetOrderList` only covers TODAY, so
+  the original `getOrders`/`getOrder` lost track of any overnight GTC order.
+  Lookup is now three-tier, stopping at the first tier that resolves every
+  requested id: (1) the push-fresh order cache, (2) today's
+  `Trd_GetOrderList`, (3) `Trd_GetHistoryOrderList` over the past 30 days
+  (`ORDER_HISTORY_LOOKBACK_DAYS` — one month per the maintainer's explicit
+  choice), narrowed via `TrdFilterConditions.idList` and using the strict
+  `YYYY-MM-DD HH:MM:SS` time format the proto requires (local machine time —
+  the proto documents no timezone and OpenD runs on the same machine).
+- **Order-update push.** `Trd_SubAccPush` (cmd 2008) registers the connection
+  for `Trd_UpdateOrder` pushes (cmd 2208); `FutuBroker` keeps a
+  push-fresh `orderCache` so tracked-order reads stop hitting the wire.
+  Registration failure is non-fatal (polling still works); the cache is
+  cleared on any transport interruption because pushes missed while
+  disconnected would otherwise leave silently stale entries.
+- **Connection-state notification.** The `futu-api` base transport
+  auto-reconnects a dropped socket on its own (base.js `reconnect()`) and
+  re-fires `onlogin(true)` after the re-handshake — but all wire
+  subscriptions die with the old socket, and the wrapper class exposes no
+  close hook. `FutuGatewayClient` now attaches to the base's
+  `onclose` user hook (`ws.websock.onclose`), emits `dead` on unexpected
+  close (mapped to `IBroker.setConnectionStateListener`, which
+  `UnifiedTradingAccount` already consumes: dead → offline + recovery), and
+  after an SDK auto-reconnect re-subscribes every quote security and the
+  order-push registration before emitting `restored`. `FutuBroker` re-runs
+  trade unlock on `restored` (OpenD itself may have restarted, which wipes
+  unlock state; re-unlock is idempotent). A re-run of `init()` now also
+  stops the previous gateway first — the UTA recovery loop re-inits without
+  closing, and the SDK's auto-reconnect would otherwise keep a zombie
+  connection alive.
+
+Verification: `FutuBroker.spec.ts` + `FutuGatewayClient.spec.ts` now total
+78 tests, all green against mocked gateways/SDK; root `npx tsc --noEmit`
+clean. Same NOT-live-verified ceiling as the rest of this plan.
+
 ## Increment 3 — first-class `BROKER_ENGINE` registration
 
 The backend half of this was already done as part of Increment 1's commit:

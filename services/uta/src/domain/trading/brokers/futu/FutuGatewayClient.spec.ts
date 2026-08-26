@@ -17,6 +17,10 @@ const { FakeWs, getLastInstance } = vi.hoisted(() => {
   class FakeWsImpl {
     onlogin: ((ret: boolean, msg?: unknown) => void) | null = null
     onPush: ((cmd: number, response: unknown) => void) | null = null
+    // Mirrors the base transport surface FutuGatewayClient attaches
+    // connection-loss hooks to (base.js invokes these user hooks on
+    // socket close/error).
+    websock: { onclose: ((e: unknown) => void) | null; onerror: ((e: unknown) => void) | null } = { onclose: null, onerror: null }
     start = vi.fn((_ip: string, _port: number, _ssl: boolean, _key: string | null) => {
       queueMicrotask(() => this.onlogin?.(true, null))
     })
@@ -26,6 +30,8 @@ const { FakeWs, getLastInstance } = vi.hoisted(() => {
     PlaceOrder = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderID: '900001', orderIDEx: 'ex-900001' } }))
     ModifyOrder = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderID: '900001' } }))
     GetOrderList = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderList: [] } }))
+    GetHistoryOrderList = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderList: [] } }))
+    SubAccPush = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: {} }))
 
     constructor() {
       lastInstance = this
@@ -38,6 +44,7 @@ vi.mock('futu-api', () => ({
   default: FakeWs,
   ftCmdID: {
     QotUpdateBasicQot: { cmd: 3005, name: 'Qot_UpdateBasicQot', description: '推送基本行情' },
+    TrdUpdateOrder: { cmd: 2208, name: 'Trd_UpdateOrder', description: '订单状态变动通知(推送)' },
   },
 }))
 
@@ -188,5 +195,108 @@ describe('FutuGatewayClient trading writes', () => {
   it('getOrderList defaults to an empty array when orderList is absent', async () => {
     const { client } = await connectedClient()
     expect(await client.getOrderList(HEADER)).toEqual([])
+  })
+
+  it('getHistoryOrderList sends the required time window and optional idList', async () => {
+    const row = { trdSide: 1, orderType: 1, orderStatus: 5, orderID: '900001', orderIDEx: 'ex', code: '00700', name: 'Tencent', qty: 100, createTime: '', updateTime: '' }
+    const { client, ws } = await connectedClient()
+    ws.GetHistoryOrderList.mockResolvedValueOnce({ retType: 0, s2c: { orderList: [row] } })
+    const rows = await client.getHistoryOrderList(HEADER, {
+      beginTime: '2024-01-01 00:00:00',
+      endTime: '2024-02-01 00:00:00',
+      idList: ['900001'],
+    })
+    expect(rows).toEqual([row])
+    expect(ws.GetHistoryOrderList).toHaveBeenCalledWith({
+      c2s: {
+        header: HEADER,
+        filterConditions: { beginTime: '2024-01-01 00:00:00', endTime: '2024-02-01 00:00:00', idList: ['900001'] },
+      },
+    })
+  })
+
+  it('subscribeOrderUpdates registers via Trd_SubAccPush and delivers Trd_UpdateOrder pushes', async () => {
+    const { client, ws } = await connectedClient()
+    const pushed: unknown[] = []
+    await client.subscribeOrderUpdates('11111', (order) => pushed.push(order))
+    expect(ws.SubAccPush).toHaveBeenCalledWith({ c2s: { accIDList: ['11111'] } })
+
+    const order = { trdSide: 1, orderType: 1, orderStatus: 11, orderID: '900001', orderIDEx: 'ex', code: '00700', name: 'Tencent', qty: 100, createTime: '', updateTime: '' }
+    ws.onPush?.(2208, { s2c: { order } })
+    expect(pushed).toEqual([order])
+
+    // Unrelated commands and empty payloads are ignored.
+    ws.onPush?.(2208, { s2c: {} })
+    ws.onPush?.(9999, { s2c: { order } })
+    expect(pushed).toHaveLength(1)
+  })
+
+  it('drops the push registration when the SubAccPush wire call fails', async () => {
+    const { client, ws } = await connectedClient()
+    ws.SubAccPush.mockRejectedValueOnce(new Error('not ready'))
+    await expect(client.subscribeOrderUpdates('11111', () => {})).rejects.toThrow('not ready')
+
+    const order = { trdSide: 1, orderType: 1, orderStatus: 11, orderID: '1', orderIDEx: '', code: '00700', name: '', qty: 1, createTime: '', updateTime: '' }
+    // A push arriving after the failed registration must not reach the callback.
+    expect(() => ws.onPush?.(2208, { s2c: { order } })).not.toThrow()
+  })
+})
+
+describe('FutuGatewayClient connection state', () => {
+  it('reports dead when the transport closes unexpectedly', async () => {
+    const { client, ws } = await connectedClient()
+    const events: unknown[] = []
+    client.setConnectionListener((e) => events.push(e))
+
+    ws.websock.onclose?.({ code: 1006 })
+
+    expect(events).toEqual([
+      expect.objectContaining({ state: 'dead', error: expect.stringMatching(/closed unexpectedly/i) }),
+    ])
+  })
+
+  it('suppresses dead events for a deliberate stop()', async () => {
+    const { client, ws } = await connectedClient()
+    const events: unknown[] = []
+    client.setConnectionListener((e) => events.push(e))
+
+    client.stop()
+    ws.websock.onclose?.({ code: 1000 })
+
+    expect(events).toEqual([])
+  })
+
+  it('re-subscribes quotes and order push after an SDK auto-reconnect, then reports restored', async () => {
+    const { client, ws } = await connectedClient()
+    const events: unknown[] = []
+    client.setConnectionListener((e) => events.push(e))
+    await client.subscribeBasicQuote([SEC_700, SEC_AAPL], () => {})
+    await client.subscribeOrderUpdates('11111', () => {})
+    ws.Sub.mockClear()
+    ws.SubAccPush.mockClear()
+
+    // base.js auto-reconnects a dropped socket and re-fires onlogin(true).
+    ws.onlogin?.(true, null)
+    await vi.waitFor(() => expect(events).toContainEqual({ state: 'restored' }))
+
+    expect(ws.Sub).toHaveBeenCalledWith({
+      c2s: { securityList: [SEC_700, SEC_AAPL], subTypeList: [1], isSubOrUnSub: true, isRegOrUnRegPush: true },
+    })
+    expect(ws.SubAccPush).toHaveBeenCalledWith({ c2s: { accIDList: ['11111'] } })
+  })
+
+  it('reports dead when the post-reconnect re-subscribe itself fails', async () => {
+    const { client, ws } = await connectedClient()
+    const events: unknown[] = []
+    client.setConnectionListener((e) => events.push(e))
+    await client.subscribeBasicQuote([SEC_700], () => {})
+    ws.Sub.mockRejectedValueOnce(new Error('socket dropped again'))
+
+    ws.onlogin?.(true, null)
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({ state: 'dead', error: expect.stringMatching(/socket dropped again/) }),
+      ),
+    )
   })
 })
