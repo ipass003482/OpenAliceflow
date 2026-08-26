@@ -90,7 +90,7 @@ the durable truth after it changes. Git history is the archive.
 - [[plans/futu-performance-loop.md]] — The measurement loop: Futu historical
   K-lines, fill push, real fees into the ledger/history, limit-order
   slippage, and a win-rate/expectancy/drawdown stats panel. Increments A
-  (historical K-lines) and B (fill push + Trd_GetOrderFee fees at the
-  broker boundary) are complete and unit-tested; C (fees into the ledger/
-  projection) and D (stats panel UI) are written up as a detailed handoff
-  spec in the plan file for the next agent session.
+  through C are complete and unit-tested. D is implemented and passes focused
+  lib/hook/component/page tests plus UI typecheck; its required demo-route
+  browser walk remains open because this environment exposed no browser
+  backend.

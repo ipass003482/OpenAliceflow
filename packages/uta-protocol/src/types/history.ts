@@ -49,6 +49,9 @@ export interface OrderHistoryEntry {
   status: OrderHistoryStatus
   filledQty?: string
   avgFillPrice?: string
+  /** Broker-reported aggregate commission and fees (Decimal as string). */
+  fee?: string
+  feeCurrency?: string
   /** 'external' = observed on the broker, not placed through Alice. */
   source: OrderHistorySource
   /** Commit that introduced the order — the audit pointer. */
@@ -70,6 +73,9 @@ export interface TradeHistoryEntry {
   price: string
   /** quantity × price × multiplier (string — Decimal-safe). */
   value: string
+  /** Broker-reported aggregate commission and fees (Decimal as string). */
+  fee?: string
+  feeCurrency?: string
   /** 'reconcile' = balance drift folded in at observed price, not a real fill record. */
   source: TradeHistorySource
   commitHash: string

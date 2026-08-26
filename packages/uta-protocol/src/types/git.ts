@@ -68,6 +68,9 @@ export interface OperationResult {
   filledQty?: string
   /** Decimal as string — see filledQty. */
   filledPrice?: string
+  /** Decimal as string — broker-reported aggregate commission and fees. */
+  fee?: string
+  feeCurrency?: string
   error?: string
   /** Bracket TP/SL child orders created alongside this placeOrder (tracked from birth). */
   legs?: PlaceOrderLeg[]
@@ -183,6 +186,9 @@ export interface OrderStatusUpdate {
   /** Decimal as string — same precision invariant as OperationResult. */
   filledPrice?: string
   filledQty?: string
+  /** Decimal as string — broker-reported aggregate commission and fees. */
+  fee?: string
+  feeCurrency?: string
 }
 
 export interface SyncResult {

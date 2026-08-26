@@ -7,6 +7,7 @@ import { getIntlLocale } from '../lib/intl'
 import type { UTAConfig, BrokerPreset, AccountInfo, SubAccountRef, Position, BrokerHealthInfo, UTASnapshotSummary, EquityCurvePoint, OrderHistoryEntry, OrderHistoryStatus, TradeHistoryEntry } from '../api/types'
 import { useTradingConfig } from '../hooks/useTradingConfig'
 import { useAccountHealth } from '../hooks/useAccountHealth'
+import { useTradeStats } from '../hooks/useTradeStats'
 import { PageHeader } from '../components/PageHeader'
 import { EmptyState, Skeleton } from '../components/StateViews'
 import { ReconnectButton } from '../components/ReconnectButton'
@@ -21,6 +22,7 @@ import { secTypeToClass, assetClassLabel, ASSET_CLASS_ORDER, type AssetClass } f
 import { ContractCell, contractPrimary } from '../lib/contract-display'
 import { displayNameForUTA } from '../lib/uta-account-filter'
 import { PositionLiveTick } from '../components/uta/PositionLiveTick'
+import { PerformanceStatsSection } from '../components/uta/PerformanceStatsSection'
 
 // ==================== Page ====================
 
@@ -38,6 +40,8 @@ export function UTADetailPage({ spec }: UTADetailPageProps) {
   const [account, setAccount] = useState<AccountInfo | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
   const [orders, setOrders] = useState<unknown[]>([])
+  const [orderHistory, setOrderHistory] = useState<OrderHistoryEntry[] | null>(null)
+  const [tradeHistory, setTradeHistory] = useState<TradeHistoryEntry[] | null>(null)
   // Sub-accounts (wallets). Empty/length-1 for ordinary brokers; >1 for
   // separate-wallet venues (Binance: spot / derivatives). `selectedSub`
   // undefined ⇒ the aggregate view across all wallets.
@@ -122,6 +126,27 @@ export function UTADetailPage({ spec }: UTADetailPageProps) {
     return () => { clearInterval(liveInterval); clearInterval(snapshotInterval) }
   }, [refreshLive, refreshSnapshots])
 
+  // Histories feed both the stats projection and the Orders tabs. Fetch once
+  // at page ownership so feature components remain prop-driven and no second
+  // polling loop can disagree about which rows were measured.
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    const load = () => Promise.all([
+      api.trading.orderHistory(id, 50),
+      api.trading.tradeHistory(id, 50),
+    ]).then(([orderResult, tradeResult]) => {
+      if (cancelled) return
+      setOrderHistory(orderResult.orders)
+      setTradeHistory(tradeResult.trades)
+    }).catch(() => {})
+    setOrderHistory(null)
+    setTradeHistory(null)
+    void load()
+    const timer = setInterval(load, 15_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [id])
+
   // Market clock — mount + every 60s. The poll itself re-renders the
   // "opens in Xh Ym" countdown, so no separate ticker is needed.
   useEffect(() => {
@@ -183,6 +208,7 @@ export function UTADetailPage({ spec }: UTADetailPageProps) {
       }))
   }, [snapshots, id])
 
+  const tradeStats = useTradeStats(tradeHistory, orderHistory, curvePoints)
   if (tc.loading) return <Shell title={id ?? 'UTA'}><UTADetailMainSkeleton /></Shell>
   if (!id) return <Shell title="UTA not specified" />
   if (!uta) {
@@ -312,7 +338,13 @@ export function UTADetailPage({ spec }: UTADetailPageProps) {
                 })}
               />
 
-              <OrdersArea utaId={id} openOrders={orders} />
+              <PerformanceStatsSection state={tradeStats} currency={account?.baseCurrency ?? 'USD'} />
+
+              <OrdersArea
+                openOrders={orders}
+                history={orderHistory}
+                trades={tradeHistory}
+              />
             </div>
           )}
         </div>
@@ -898,34 +930,13 @@ interface OpenOrderRow {
 
 type OrdersTab = 'open' | 'history' | 'trades'
 
-export function OrdersArea({ utaId, openOrders }: { utaId: string; openOrders: unknown[] }) {
+export function OrdersArea({ openOrders, history = null, trades = null }: {
+  openOrders: unknown[]
+  history?: OrderHistoryEntry[] | null
+  trades?: TradeHistoryEntry[] | null
+  utaId?: string
+}) {
   const [tab, setTab] = useState<OrdersTab>('open')
-  const [history, setHistory] = useState<OrderHistoryEntry[] | null>(null)
-  const [trades, setTrades] = useState<TradeHistoryEntry[] | null>(null)
-
-  // Lazy-fetch per tab on first open; refresh on the same 15s cadence as the
-  // live poll while the tab stays active.
-  useEffect(() => {
-    if (tab !== 'history') return
-    let cancelled = false
-    const load = () => api.trading.orderHistory(utaId, 50)
-      .then(r => { if (!cancelled) setHistory(r.orders) })
-      .catch(() => {})
-    load()
-    const t = setInterval(load, 15_000)
-    return () => { cancelled = true; clearInterval(t) }
-  }, [tab, utaId])
-
-  useEffect(() => {
-    if (tab !== 'trades') return
-    let cancelled = false
-    const load = () => api.trading.tradeHistory(utaId, 50)
-      .then(r => { if (!cancelled) setTrades(r.trades) })
-      .catch(() => {})
-    load()
-    const t = setInterval(load, 15_000)
-    return () => { cancelled = true; clearInterval(t) }
-  }, [tab, utaId])
 
   const tabs: Array<{ id: OrdersTab; label: string; panelLabel: string }> = [
     { id: 'open', label: `Open (${openOrders.length})`, panelLabel: 'Open orders' },

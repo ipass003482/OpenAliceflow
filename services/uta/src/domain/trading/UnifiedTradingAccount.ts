@@ -884,6 +884,10 @@ export class UnifiedTradingAccount {
 
         const currentStatus =
           status === 'Filled' ? 'filled' : status === 'Cancelled' ? 'cancelled' : 'rejected'
+        const commissionAndFees = brokerOrder.orderState.commissionAndFees
+        const fee = Number.isFinite(commissionAndFees) && commissionAndFees !== UNSET_DOUBLE
+          ? String(commissionAndFees)
+          : undefined
         if (currentStatus === 'filled' && (!filledQty || !brokerOrder.avgFillPrice)) {
           // Loud, not fatal: a fill without qty/price still advances the
           // state machine, but cost-basis reconstruction downstream will be
@@ -902,6 +906,10 @@ export class UnifiedTradingAccount {
           currentStatus,
           filledQty,
           filledPrice: brokerOrder.avgFillPrice,
+          ...(fee && {
+            fee,
+            feeCurrency: brokerOrder.orderState.commissionAndFeesCurrency || undefined,
+          }),
         })
       }
     }

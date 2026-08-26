@@ -50,7 +50,10 @@ describe('projectOrderHistory', () => {
       ),
       commit(
         [{ action: 'syncOrders' }],
-        [{ action: 'syncOrders', success: true, orderId: 'o1', status: 'filled', filledQty: '0.01', filledPrice: '1648.5' }],
+        [{
+          action: 'syncOrders', success: true, orderId: 'o1', status: 'filled',
+          filledQty: '0.01', filledPrice: '1648.5', fee: '1.25', feeCurrency: 'USD',
+        }],
       ),
     ]
     const rows = projectOrderHistory(commits)
@@ -64,6 +67,8 @@ describe('projectOrderHistory', () => {
       status: 'filled',
       filledQty: '0.01',
       avgFillPrice: '1648.5',
+      fee: '1.25',
+      feeCurrency: 'USD',
       source: 'alice',
       message: 'buy the dip',
     })
@@ -128,13 +133,17 @@ describe('projectTradeHistory', () => {
       ),
       commit(
         [{ action: 'syncOrders' }],
-        [{ action: 'syncOrders', success: true, orderId: 'o1', status: 'filled', filledQty: '0.01', filledPrice: '1648.5' }],
+        [{
+          action: 'syncOrders', success: true, orderId: 'o1', status: 'filled',
+          filledQty: '0.01', filledPrice: '1648.5', fee: '1.25', feeCurrency: 'USD',
+        }],
       ),
     ]
     const trades = projectTradeHistory(commits)
     expect(trades).toHaveLength(1)
     expect(trades[0]).toMatchObject({
-      orderId: 'o1', side: 'BUY', quantity: '0.01', price: '1648.5', value: '16.485', source: 'order',
+      orderId: 'o1', side: 'BUY', quantity: '0.01', price: '1648.5', value: '16.485',
+      fee: '1.25', feeCurrency: 'USD', source: 'order',
     })
   })
 
@@ -164,5 +173,24 @@ describe('projectTradeHistory', () => {
       ),
     ]
     expect(projectTradeHistory(commits)).toHaveLength(1)
+  })
+
+  it('leaves fee fields absent when the sync result has no fee data', () => {
+    const commits = [
+      commit(
+        [{ action: 'placeOrder', contract: contract(), order: limitBuy('1', '100') }],
+        [{ action: 'placeOrder', success: true, orderId: 'no-fee', status: 'submitted' }],
+      ),
+      commit(
+        [{ action: 'syncOrders' }],
+        [{ action: 'syncOrders', success: true, orderId: 'no-fee', status: 'filled', filledQty: '1', filledPrice: '100' }],
+      ),
+    ]
+    const [order] = projectOrderHistory(commits)
+    const [trade] = projectTradeHistory(commits)
+    expect(order).not.toHaveProperty('fee')
+    expect(order).not.toHaveProperty('feeCurrency')
+    expect(trade).not.toHaveProperty('fee')
+    expect(trade).not.toHaveProperty('feeCurrency')
   })
 })

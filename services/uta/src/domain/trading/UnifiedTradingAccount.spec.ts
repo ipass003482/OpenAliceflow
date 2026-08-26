@@ -931,6 +931,15 @@ describe('UTA — sync', () => {
 
     // Simulate fill via test helper
     broker.fillPendingOrder(orderId!, 149)
+    const getOrder = broker.getOrder.bind(broker)
+    vi.spyOn(broker, 'getOrder').mockImplementation(async (...args) => {
+      const row = await getOrder(...args)
+      if (row) {
+        row.orderState.commissionAndFees = 2.75
+        row.orderState.commissionAndFeesCurrency = 'USD'
+      }
+      return row
+    })
 
     const result = await uta.sync()
     expect(result.updatedCount).toBe(1)
@@ -940,6 +949,26 @@ describe('UTA — sync', () => {
     // fill is invisible to cost-basis reconstruction.
     expect(result.updates[0].filledQty).toBe('10')
     expect(result.updates[0].filledPrice).toBe('149')
+    expect(result.updates[0].fee).toBe('2.75')
+    expect(result.updates[0].feeCurrency).toBe('USD')
+  })
+
+  it.each([UNSET_DOUBLE, Number.NaN])('omits unavailable broker fees (%s)', async (commissionAndFees) => {
+    const { uta, broker } = createUTA()
+    uta.stagePlaceOrder({ aliceId: 'mock-paper|AAPL', symbol: 'AAPL', action: 'BUY', orderType: 'LMT', totalQuantity: '10', lmtPrice: '150' })
+    uta.commit('limit buy')
+    const orderId = (await uta.push(uta.status().pendingHash!)).submitted[0]!.orderId!
+    broker.fillPendingOrder(orderId, 149)
+    const getOrder = broker.getOrder.bind(broker)
+    vi.spyOn(broker, 'getOrder').mockImplementation(async (...args) => {
+      const row = await getOrder(...args)
+      if (row) row.orderState.commissionAndFees = commissionAndFees
+      return row
+    })
+
+    const result = await uta.sync()
+    expect(result.updates[0]).not.toHaveProperty('fee')
+    expect(result.updates[0]).not.toHaveProperty('feeCurrency')
   })
 
   it('records cumulative qty + weighted avg price across partial fills', async () => {

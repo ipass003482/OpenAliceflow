@@ -1,7 +1,9 @@
 # Futu performance loop: history K-lines, fills, fees, slippage, stats
 
-Status: Increments A and B are complete and unit-tested. Increments C and D
-are NOT started — this file doubles as the handoff spec for the next agent
+Status: Increments A, B, and C are complete and unit-tested. Increment D is
+implemented and typechecked with focused lib/hook/component/page tests; its
+required real-browser demo-route walk remains blocked because no browser
+backend is available in this environment. This file doubles as the handoff spec
 (written so a fresh Codex/Claude session can execute without re-deriving
 context). Read the whole file before editing anything.
 
@@ -89,9 +91,14 @@ value the wire did not carry; absent data stays absent.
   Verification: FutuBroker.spec.ts + FutuGatewayClient.spec.ts = 92 tests
   green; root `npx tsc --noEmit` clean.
 
-- [ ] **C — fees into the ledger and history projection. NOT STARTED.**
-  Handoff spec below.
-- [ ] **D — performance stats panel. NOT STARTED.** Handoff spec below.
+- [x] **C — fees into the ledger and history projection. DONE.** Optional
+  Decimal-string fee fields now flow from broker sync through commits into
+  order/trade projections and UI mirrors; sentinel/non-finite values stay absent.
+- [ ] **D — performance stats panel. IMPLEMENTED; BROWSER WALK BLOCKED.** FIFO
+  round trips, fee-adjusted stats and coverage, drawdown, honest slippage, a
+  computation-only hook, responsive disclosure UI, and demo fixtures are in
+  place. The in-app browser runtime reported no available browser, so the
+  required `/settings/uta/demo-paper` visual/interaction walk remains open.
 
 ## Increment C handoff — fees: broker → sync → commit → projection
 

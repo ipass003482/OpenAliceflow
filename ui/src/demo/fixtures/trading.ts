@@ -319,9 +319,15 @@ export const demoOrderHistoryByUTA: Record<string, OrderHistoryEntry[]> = {
       source: 'alice', commitHash: 'f31c9a2', message: 'Add AMD ahead of earnings',
     },
     {
+      orderId: '90403', timestamp: hoursAgo(1.7), resolvedAt: hoursAgo(1.5), contract: stk('AAPL'), side: 'SELL',
+      orderType: 'LMT', quantity: '20', limitPrice: '193.80', status: 'filled',
+      filledQty: '20', avgFillPrice: '193.74', fee: '1.12', feeCurrency: 'USD',
+      source: 'alice', commitHash: 'd9f15b2', message: 'Take profit on AAPL swing',
+    },
+    {
       orderId: '90398', timestamp: hoursAgo(3), resolvedAt: hoursAgo(2.8), contract: stk('AAPL'), side: 'BUY',
       orderType: 'LMT', quantity: '20', limitPrice: '188.00', status: 'filled',
-      filledQty: '20', avgFillPrice: '187.92',
+      filledQty: '20', avgFillPrice: '187.92', fee: '1.08', feeCurrency: 'USD',
       source: 'alice', commitHash: 'c8d04e1', message: 'Add AAPL on pullback',
     },
     {
@@ -385,8 +391,12 @@ export const demoOrderHistoryByUTA: Record<string, OrderHistoryEntry[]> = {
 export const demoTradeHistoryByUTA: Record<string, TradeHistoryEntry[]> = {
   [DEMO_UTA_PAPER]: [
     {
+      timestamp: hoursAgo(1.5), orderId: '90403', contract: stk('AAPL'), side: 'SELL',
+      quantity: '20', price: '193.74', value: '3874.80', fee: '1.12', feeCurrency: 'USD', source: 'order', commitHash: 'd9f15b2',
+    },
+    {
       timestamp: hoursAgo(2.8), orderId: '90398', contract: stk('AAPL'), side: 'BUY',
-      quantity: '20', price: '187.92', value: '3758.40', source: 'order', commitHash: 'c8d04e1',
+      quantity: '20', price: '187.92', value: '3758.40', fee: '1.08', feeCurrency: 'USD', source: 'order', commitHash: 'c8d04e1',
     },
     {
       timestamp: hoursAgo(7), orderId: '90371', contract: stk('NVDA'), side: 'SELL',

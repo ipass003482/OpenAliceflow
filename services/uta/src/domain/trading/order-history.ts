@@ -121,6 +121,8 @@ export function projectOrderHistory(commits: GitCommit[], opts: { limit?: number
         target.resolvedAt = commit.timestamp
         if (result.filledQty) target.filledQty = result.filledQty
         if (result.filledPrice) target.avgFillPrice = result.filledPrice
+        if (result.fee) target.fee = result.fee
+        if (result.feeCurrency) target.feeCurrency = result.feeCurrency
       }
     }
   }
@@ -168,6 +170,8 @@ export function projectTradeHistory(commits: GitCommit[], opts: { limit?: number
     multiplier?: string
     source: TradeHistoryEntry['source']
     commitHash: string
+    fee?: string
+    feeCurrency?: string
   }): void => {
     const value = new Decimal(params.qty).mul(params.price).mul(params.multiplier || '1')
     trades.push({
@@ -178,6 +182,8 @@ export function projectTradeHistory(commits: GitCommit[], opts: { limit?: number
       quantity: params.qty,
       price: params.price,
       value: value.toFixed(),
+      ...(params.fee && { fee: params.fee }),
+      ...(params.feeCurrency && { feeCurrency: params.feeCurrency }),
       source: params.source,
       commitHash: params.commitHash,
     })
@@ -201,6 +207,8 @@ export function projectTradeHistory(commits: GitCommit[], opts: { limit?: number
           multiplier: meta.multiplier,
           source: commitSourceIsExternal(commits, result.orderId) ? 'external' : 'order',
           commitHash: commit.hash,
+          fee: result.fee,
+          feeCurrency: result.feeCurrency,
         })
         counted.add(result.orderId)
       }
