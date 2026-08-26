@@ -49,6 +49,7 @@ const SAMPLE_CONFIGS: Record<string, Record<string, unknown>> = {
     privateKey: '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
   },
   'mock-simulator': { cash: 50000 },
+  futu: { mode: 'simulate', trdMarket: 'HK', host: '127.0.0.1', port: 33333 },
 }
 
 // ==================== Catalog integrity ====================

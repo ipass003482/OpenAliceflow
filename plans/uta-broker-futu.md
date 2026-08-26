@@ -1,6 +1,8 @@
 # UTA Broker: Futu (富途) Pack
 
-Status: investigation/grounding complete; implementation not started.
+Status: Increments 1–3 (read-only broker, order writes, first-class engine
+registration) all complete at the code/unit-test level. Never verified
+against a real FutuOpenD gateway or Futu account.
 
 Related owner guides: [[docs/broker-packs.md]], [[docs/uta-live-testing.md]],
 [[docs/ibkr-wire-protocol.md]] (closest precedent for wire-protocol complexity).
@@ -47,12 +49,21 @@ Agreed increment split:
   `BrokerError('CONFIG', 'Futu order writes are not supported yet')`.
   Verification ceiling: `tsc --noEmit` + unit tests against **mocked** gateway
   responses. No real or simulated FutuOpenD connection is exercised.
-- **Increment 2 (deferred, not started)**: order placement/modify/cancel —
-  must not be attempted without a real demo/paper Futu account + FutuOpenD
-  gateway to verify against (per `docs/uta-live-testing.md`).
-- **Increment 3 (deferred, not started)**: register `futu` as a first-class
-  `BROKER_ENGINE` (UI broker picker, `broker-packs.md` supported-engine list,
-  4-platform release catalog packaging).
+- **Increment 2 (complete — see "Increment 2" section below)**: order
+  placement/modify/cancel/close. The maintainer explicitly requested this
+  before any live FutuOpenD/account verification was available — same
+  standing exception already exercised for Increment 1 and for the whole
+  `plans/futu-realtime-quotes.md` project. Verification ceiling is
+  identical: `tsc --noEmit` + unit tests against a **mocked** gateway. NOT
+  verified against a real FutuOpenD gateway or Futu account.
+- **Increment 3 (complete — see "Increment 3" section below)**: register
+  `futu` as a first-class `BROKER_ENGINE`. The backend half (registry,
+  `INSTALLABLE_BROKER_ENGINES`, `docs/broker-packs.md`'s engine union, the
+  4-platform release-catalog build script's `packageNames` map) was already
+  done as part of Increment 1's commit. What remained — and is now done —
+  was the UI-facing half: a `FUTU_PRESET` in the broker-preset catalog and
+  the frontend `BrokerEngine`/`BrokerPreset.engine` type union, without
+  which Futu could not actually be added through the Trading page wizard.
 
 ## Grounded facts (from the bundled `.proto` files — do not re-derive, reuse)
 
@@ -157,11 +168,95 @@ package already installed under the scaffold's `node_modules`).
 
 ## Explicitly out of scope for this plan (do not attempt without a live gateway)
 
-- Any order placement/modification/cancellation logic (Increment 2).
-- UI broker-picker entry, `docs/broker-packs.md` supported-engine list
-  update, and the 4-platform release-catalog packaging (Increment 3).
+- Combo orders, TWAP/VWAP, trailing-stop orders, and bracket take-profit/
+  stop-loss legs (Increment 2 handles single-leg MKT/LMT/STP/STP LMT only —
+  see "Increment 2" below for the exact refusal behavior).
 - Any claim of live-paper verification — there is no FutuOpenD gateway or
-  Futu account available to this session.
+  Futu account available to this session, for either Increment 1 or 2.
+
+## Increment 2 — order placement/modify/cancel/close
+
+Scope, grounded in the same bundled `.proto` files as Increment 1
+(`Trd_PlaceOrder.proto`, `Trd_ModifyOrder.proto`, `Trd_UnlockTrade.proto`,
+`Trd_GetOrderList.proto`, `Trd_Common.proto`'s `TrdSide`/`OrderType`/
+`OrderStatus`/`ModifyOrderOp`/`Order` message):
+
+- `placeOrder`/`modifyOrder`/`cancelOrder`/`closePosition`/`getOrders`/
+  `getOrder` are implemented for real. `getCapabilities().supportedOrderTypes`
+  changed from `[]` to `['MKT', 'LMT', 'STP', 'STP LMT']`.
+- **Trade unlock** (`Trd_UnlockTrade`) is required before FutuOpenD accepts
+  any order write, and is a one-time-per-OpenD-session unlock, not per-order
+  (per the SDK's own doc comment: "解锁，针对OpenD解锁一次即可"). The
+  maintainer chose, when asked directly, to let OpenAlice hold the trade
+  password (as an optional `tradePassword` config field, same storage as any
+  other broker's API secret — masked as a password field in the UI via
+  `writeOnlyFields`) and unlock automatically at `init()`, rather than
+  requiring a manual unlock inside FutuOpenD every session. The plaintext
+  password never reaches disk or the wire: `FutuBroker.init()` MD5-hashes it
+  locally (`node:crypto`) before calling `unlockTrade(pwdMD5)`, matching the
+  wire format `Trd_UnlockTrade.C2S.pwdMD5` expects. It is never committed to
+  git — this is ordinary runtime broker config, not source. Leaving the
+  field blank is fully supported: the user can unlock manually inside
+  FutuOpenD/moomoo instead, and unlock failure is non-fatal (logged, not
+  thrown) so reads keep working — only a later order write actually fails.
+- Order-type mapping is deliberately narrow: `MKT`/`LMT`/`STP`/`STP LMT`
+  only. TWAP/VWAP, combo, and event-contract order types in
+  `Trd_Common.OrderType` are not mapped. Bracket TP/SL (`TpSlParams`) is
+  explicitly refused with a clear error rather than silently dropped or
+  approximated — Futu's combo-order path (`Trd_PlaceComboOrder.proto`) is a
+  structurally different message this increment does not touch.
+- `closePosition` looks up the live position and places an opposite-side
+  `MKT` order for the (possibly partial) quantity — same pattern as
+  `AlpacaBroker.closePosition`'s reverse-order path.
+- `getOrders`/`getOrder` map `Trd_Common.Order` rows into IBKR-shaped
+  `Order`/`OrderState`, reusing `AlpacaBroker`/`alpaca-contracts.ts`'s
+  established `OrderState.status` vocabulary (`Submitted`/`Filled`/
+  `Cancelled`/`PendingSubmit`/`PreSubmitted`/`PendingCancel`/`Inactive`/
+  `ApiCancelled`) so the ledger/sync layer sees one consistent vocabulary
+  regardless of broker. Futu's `orderID` is `uint64` — like Alpaca's UUID
+  ids, `Order.orderId` (IBKR's numeric field) is left at its default `0`;
+  the real id lives in `OpenOrder.orderId` as a string.
+- Verification ceiling — same as every other increment in this plan:
+  `npx tsc --noEmit` (root) clean, `FutuBroker.spec.ts` (50 tests) and
+  `FutuGatewayClient.spec.ts` (13 tests) green against a **mocked** gateway,
+  plus the `BROKER_PRESET_CATALOG` roundtrip test's new `futu` case (verifies
+  `FUTU_PRESET.toEngineConfig(...)` output parses against the real
+  `FutuBroker.configSchema`). **NOT verified against a real FutuOpenD
+  gateway or Futu account.** Start on `trdEnv: 'simulate'` (the config
+  default) and confirm behavior there — including that the account stays in
+  the expected state — before ever configuring `trdEnv: 'real'`.
+
+## Increment 3 — first-class `BROKER_ENGINE` registration
+
+The backend half of this was already done as part of Increment 1's commit:
+`'futu'` in `INSTALLABLE_BROKER_ENGINES` (`src/core/broker-packs.ts`), the
+`BrokerEngine` union in `packages/uta-protocol/src/brokers/preset-catalog.ts`,
+`docs/broker-packs.md`'s documented `BROKER_ENGINE` union, and
+`scripts/build-broker-packs.ts`'s `packageNames` map (so `futu` already
+gets a 4-platform release archive built alongside the other engines).
+
+What was still missing — discovered while scoping Increment 2, since without
+it there was no way to actually add a Futu account through the app — was the
+UI-facing half:
+
+- `FUTU_PRESET` added to `BROKER_PRESET_CATALOG`
+  (`packages/uta-protocol/src/brokers/preset-catalog.ts`), mirroring the
+  `IBKR_PRESET` shape (local-gateway host/port, not cloud API keys):
+  `host`/`port`/`ssl`/`wsKey`/`tradePassword`/`trdMarket`/`accID` fields,
+  `mode` (simulate/real) drives `isPaper`, `wsKey`/`tradePassword` are
+  `writeOnlyFields`.
+- `'futu'` added to the frontend `BrokerPreset.engine`/`BrokerEngine` union
+  in `ui/src/api/types.ts` — this was the actual gap behind "why can't I add
+  Futu from the UI even though the backend engine exists": the generic
+  schema-driven form system (`useSchemaForm.ts`/`SchemaFormFields.tsx`) only
+  needed the preset + type union to render a working "Add Futu" flow; no
+  broker-specific frontend component was needed.
+
+Verification: the `BROKER_PRESET_CATALOG` roundtrip test in
+`services/uta/src/domain/trading/brokers/presets.spec.ts` (parameterized
+over every preset) now covers `futu` too — confirms the preset's
+`zodSchema` accepts a sample config and `toEngineConfig(...)` output parses
+against the real `FutuBroker.configSchema`. `cd ui && npx tsc -b` clean.
 
 ## Completion criteria for Increment 1
 
@@ -172,8 +267,12 @@ dev-only workspace-pack path (`OPENALICE_BROKER_PACK_ALLOW_WORKSPACE=1` /
 checked off (or split forward into Increment 2/3 follow-up plans) per the
 Plan Contract in `PLANS.md`.
 
-Status: Increment 1 code, types, and unit tests are complete and verified by
-the targeted checks above. Still open before this plan can be deleted: a
-maintainer decision on whether to accept Increment 1 as-is (never verified
-against a real FutuOpenD gateway) or require a live-gateway smoke pass first;
-then either delete this plan or start an Increment 2 plan for order writes.
+Status: Increments 1, 2, and 3 are all complete and verified at the
+code/unit-test/typecheck level described above. What remains before this
+plan can be deleted is a maintainer decision on accepting the whole pack
+(read + write) as-is versus requiring a live-gateway/live-account smoke pass
+first — no increment in this plan has ever been exercised against a real
+FutuOpenD gateway or Futu account, because neither is available in this
+development environment. If accepted as unverified, delete this plan file;
+if a live-gateway acceptance pass is required, keep this plan open with that
+as the single remaining checklist item.

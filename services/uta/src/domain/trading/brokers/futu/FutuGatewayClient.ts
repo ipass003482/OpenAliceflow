@@ -29,6 +29,10 @@ import {
   type FutuSnapshotLike,
   type FutuStaticInfoLike,
   type FutuBasicQotLike,
+  type FutuOrderLike,
+  type FutuPlaceOrderParams,
+  type FutuModifyOrderParams,
+  type FutuLongLike,
   FutuSubType,
 } from './futu-types.js'
 
@@ -105,6 +109,51 @@ export class FutuGatewayClient implements FutuGateway {
   async getStaticInfo(securities: FutuSecurity[]): Promise<FutuStaticInfoLike[]> {
     const resp = await this.require().GetStaticInfo({ c2s: { securityList: securities } })
     return this.s2c<{ staticInfoList?: FutuStaticInfoLike[] }>(resp, 'GetStaticInfo').staticInfoList ?? []
+  }
+
+  // ---- Trading writes ----
+
+  /** Trd_UnlockTrade — "解锁，针对OpenD解锁一次即可" per the SDK's own doc comment. */
+  async unlockTrade(pwdMD5: string): Promise<void> {
+    await this.require().UnlockTrade({ c2s: { unlock: true, pwdMD5 } })
+  }
+
+  /** Trd_PlaceOrder. PacketID is filled in by the SDK ("PacketID不需填写，发送时接口会填"). */
+  async placeOrder(params: FutuPlaceOrderParams): Promise<{ orderID: FutuLongLike; orderIDEx?: string }> {
+    const resp = await this.require().PlaceOrder({
+      c2s: {
+        header: params.header,
+        trdSide: params.trdSide,
+        orderType: params.orderType,
+        code: params.code,
+        qty: params.qty,
+        price: params.price,
+        auxPrice: params.auxPrice,
+        timeInForce: params.timeInForce,
+      },
+    })
+    return this.s2c<{ orderID: FutuLongLike; orderIDEx?: string }>(resp, 'PlaceOrder')
+  }
+
+  /** Trd_ModifyOrder — same call handles price/qty changes AND cancel (modifyOrderOp). */
+  async modifyOrder(params: FutuModifyOrderParams): Promise<{ orderID: FutuLongLike }> {
+    const resp = await this.require().ModifyOrder({
+      c2s: {
+        header: params.header,
+        orderID: params.orderID,
+        modifyOrderOp: params.modifyOrderOp,
+        qty: params.qty,
+        price: params.price,
+        auxPrice: params.auxPrice,
+      },
+    })
+    return this.s2c<{ orderID: FutuLongLike }>(resp, 'ModifyOrder')
+  }
+
+  /** Trd_GetOrderList — today's orders for this trade header. */
+  async getOrderList(header: FutuTrdHeader): Promise<FutuOrderLike[]> {
+    const resp = await this.require().GetOrderList({ c2s: { header } })
+    return this.s2c<{ orderList?: FutuOrderLike[] }>(resp, 'GetOrderList').orderList ?? []
   }
 
   /**

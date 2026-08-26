@@ -432,6 +432,50 @@ export const LONGBRIDGE_PRESET: BrokerPresetDef = {
   isPaper: (d) => d.mode === 'paper',
 }
 
+export const FUTU_PRESET: BrokerPresetDef = {
+  id: 'futu',
+  label: 'Futu (富途)',
+  description: 'Futu (moomoo/富途) via a locally running FutuOpenD gateway — HK/US/CN/SG/JP equities, read-only positions/quotes plus order placement.',
+  category: 'recommended',
+  hint: 'Requires FutuOpenD running and logged in with your Futu account first — credentials live in FutuOpenD itself, not here. Default `websocket_port` is 33333 (FutuOpenD\'s own config). The trade password unlocks order placement for this OpenD session; leave it blank to unlock manually inside FutuOpenD/moomoo instead. Order writes are unverified against a real gateway in this codebase — start on Simulate before ever switching to Real.',
+  defaultName: 'futu-main',
+  badge: 'FT',
+  badgeColor: 'text-primary',
+  engine: 'futu',
+  guardCategory: 'securities',
+  modes: [
+    { id: 'simulate', label: 'Simulate (paper)' },
+    { id: 'real', label: 'Real' },
+  ],
+  zodSchema: z.object({
+    mode: z.enum(['simulate', 'real']).default('simulate').describe('Trade environment'),
+    trdMarket: z.enum(['HK', 'US', 'CN', 'SG', 'JP']).default('HK').describe('Trade market'),
+    host: z.string().default('127.0.0.1').describe('FutuOpenD host'),
+    port: z.coerce.number().int().default(33333).describe('FutuOpenD websocket port'),
+    ssl: z.boolean().default(false).describe('Use SSL'),
+    wsKey: z.string().optional().describe('FutuOpenD websocket_key (if configured)'),
+    tradePassword: z.string().optional().describe('Trade unlock password (optional — leave blank to unlock manually in FutuOpenD)'),
+    accID: z.string().optional().describe('Business account id (auto-detected if blank)'),
+  }),
+  subtitleFields: [
+    { field: 'mode', prefix: 'Futu · ' },
+    { field: 'trdMarket' },
+  ],
+  writeOnlyFields: ['wsKey', 'tradePassword'],
+  fingerprintFields: ['mode', 'trdMarket', 'host', 'port', 'accID'],
+  toEngineConfig: (d) => ({
+    host: d.host,
+    port: d.port,
+    ssl: d.ssl,
+    wsKey: d.wsKey,
+    trdEnv: d.mode,
+    trdMarket: d.trdMarket,
+    accID: d.accID,
+    tradePassword: d.tradePassword,
+  }),
+  isPaper: (d) => d.mode === 'simulate',
+}
+
 // ==================== Other ecosystem brokers (lower-tier, isolated) ====================
 
 export const LEVERUP_PRESET: BrokerPresetDef = {
@@ -508,6 +552,7 @@ export const BROKER_PRESET_CATALOG: BrokerPresetDef[] = [
   IBKR_PRESET,
   ALPACA_PRESET,
   LONGBRIDGE_PRESET,
+  FUTU_PRESET,
   HYPERLIQUID_PRESET,
   // ---- Crypto ----
   BINANCE_PRESET,

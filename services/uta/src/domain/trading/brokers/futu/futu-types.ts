@@ -38,6 +38,33 @@ export const FutuPositionSide = { Long: 0, Unknown: -1, Short: 1 } as const
 /** Qot_Common.SubType (subset used by this adapter). */
 export const FutuSubType = { Basic: 1 } as const
 
+/** Trd_Common.TrdSide — client only ever sends Buy/Sell (see proto comment). */
+export const FutuTrdSide = { Unknown: 0, Buy: 1, Sell: 2, SellShort: 3, BuyBack: 4 } as const
+
+/**
+ * Trd_Common.OrderType (subset this adapter maps IBKR-style `Order.orderType`
+ * onto). TWAP/VWAP/combo/event-contract order types are out of scope — see
+ * plans/uta-broker-futu.md Increment 2.
+ */
+export const FutuOrderType = {
+  Unknown: 0, Normal: 1, Market: 2, Stop: 10, StopLimit: 11,
+  MarketIfTouched: 12, LimitIfTouched: 13, TrailingStop: 14, TrailingStopLimit: 15,
+} as const
+
+/** Trd_Common.OrderStatus. */
+export const FutuOrderStatus = {
+  Unsubmitted: 0, Unknown: -1, WaitingSubmit: 1, Submitting: 2, SubmitFailed: 3,
+  TimeOut: 4, Submitted: 5, FilledPart: 10, FilledAll: 11, CancellingPart: 12,
+  CancellingAll: 13, CancelledPart: 14, CancelledAll: 15, Failed: 21, Disabled: 22,
+  Deleted: 23, FillCancelled: 24,
+} as const
+
+/** Trd_Common.ModifyOrderOp — ModifyOrder also carries cancel (see Cancel=2). */
+export const FutuModifyOrderOp = { Unknown: 0, Normal: 1, Cancel: 2, Disable: 3, Enable: 4, Delete: 5 } as const
+
+/** Trd_Common.TimeInForce. */
+export const FutuTimeInForce = { Day: 0, GTC: 1, IOC: 2, GTD: 3 } as const
+
 /** Trd_Common.Currency — enum value to ISO-style code. */
 export const FUTU_CURRENCY_CODES: Record<number, string> = {
   1: 'HKD', 2: 'USD', 3: 'CNH', 4: 'JPY', 5: 'SGD', 6: 'AUD', 7: 'CAD', 8: 'MYR', 9: 'NZD',
@@ -188,6 +215,52 @@ export interface FutuGlobalStateLike {
   time: FutuLongLike
 }
 
+/**
+ * Trd_Common.Order (subset consumed for GetOrderList / order tracking).
+ * Distinct read-side shape from the C2S params below.
+ */
+export interface FutuOrderLike {
+  trdSide: number
+  orderType: number
+  orderStatus: number
+  orderID: FutuLongLike
+  orderIDEx: string
+  code: string
+  name: string
+  qty: number
+  price?: number
+  createTime: string
+  updateTime: string
+  fillQty?: number
+  fillAvgPrice?: number
+  lastErrMsg?: string
+  secMarket?: number
+  currency?: number
+  auxPrice?: number
+}
+
+/** Trd_PlaceOrder C2S — PacketID is filled in by the SDK, not by callers. */
+export interface FutuPlaceOrderParams {
+  header: FutuTrdHeader
+  trdSide: number
+  orderType: number
+  code: string
+  qty: number
+  price?: number
+  auxPrice?: number
+  timeInForce?: number
+}
+
+/** Trd_ModifyOrder C2S (subset: single-order modify/cancel, not forAll). */
+export interface FutuModifyOrderParams {
+  header: FutuTrdHeader
+  orderID: FutuLongLike
+  modifyOrderOp: number
+  qty?: number
+  price?: number
+  auxPrice?: number
+}
+
 // ==================== Gateway abstraction ====================
 
 export interface FutuGatewayConfig {
@@ -222,6 +295,19 @@ export interface FutuGateway {
     securities: FutuSecurity[],
     onUpdate: (rows: FutuBasicQotLike[]) => void,
   ): Promise<() => Promise<void>>
+  /**
+   * Trd_UnlockTrade — unlocks order writes for this FutuOpenD connection
+   * (once per OpenD session, not per order). `pwdMD5` is the trade
+   * password's MD5 hex digest, never the plaintext password.
+   */
+  unlockTrade(pwdMD5: string): Promise<void>
+  /** Trd_PlaceOrder — returns the broker-assigned order id. */
+  placeOrder(params: FutuPlaceOrderParams): Promise<{ orderID: FutuLongLike; orderIDEx?: string }>
+  /** Trd_ModifyOrder — also used for cancel via `modifyOrderOp: FutuModifyOrderOp.Cancel`. */
+  modifyOrder(params: FutuModifyOrderParams): Promise<{ orderID: FutuLongLike }>
+  /** Trd_GetOrderList — today's orders for this trade header. */
+  getOrderList(header: FutuTrdHeader): Promise<FutuOrderLike[]>
 }
+
 
 export type FutuGatewayFactory = (config: FutuGatewayConfig) => Promise<FutuGateway> | FutuGateway

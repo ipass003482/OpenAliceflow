@@ -18,7 +18,8 @@
 
 import { z } from 'zod'
 import Decimal from 'decimal.js'
-import { Contract, ContractDescription, ContractDetails, Order } from '@traderalice/ibkr'
+import { createHash } from 'node:crypto'
+import { Contract, ContractDescription, ContractDetails, Order, OrderState, UNSET_DECIMAL } from '@traderalice/ibkr'
 import {
   BrokerError,
   type IBroker,
@@ -44,16 +45,77 @@ import {
 import {
   FUTU_CURRENCY_CODES,
   FUTU_OPEN_MARKET_STATES,
+  FutuModifyOrderOp,
+  FutuOrderStatus,
+  FutuOrderType,
   FutuPositionSide,
   FutuTrdEnv,
   FutuTrdMarket,
+  FutuTrdSide,
   type FutuGateway,
   type FutuGatewayFactory,
   type FutuGlobalStateLike,
+  type FutuOrderLike,
   type FutuTrdHeader,
 } from './futu-types.js'
 
-const READ_ONLY_REFUSAL = 'Futu order writes are not implemented — this adapter is read-only (Increment 1, see plans/uta-broker-futu.md)'
+/** IBKR-style Order.action → Trd_Common.TrdSide. Client only ever sends Buy/Sell (see Trd_Common.proto's own comment on TrdSide). */
+const FUTU_SIDE_BY_ACTION: Record<string, number> = { BUY: FutuTrdSide.Buy, SELL: FutuTrdSide.Sell }
+
+/** Trd_Common.TrdSide → IBKR-style Order.action, for order tracking (getOrders/getOrder). */
+const ACTION_BY_FUTU_SIDE: Record<number, string> = {
+  [FutuTrdSide.Buy]: 'BUY', [FutuTrdSide.Sell]: 'SELL',
+  [FutuTrdSide.SellShort]: 'SELL', [FutuTrdSide.BuyBack]: 'BUY',
+}
+
+/**
+ * IBKR-style Order.orderType → Trd_Common.OrderType. Deliberately narrow:
+ * TWAP/VWAP, combo, and event-contract order types are out of scope for
+ * this increment (see plans/uta-broker-futu.md Increment 2).
+ */
+const FUTU_ORDER_TYPE_BY_IBKR: Record<string, number> = {
+  MKT: FutuOrderType.Market,
+  LMT: FutuOrderType.Normal,
+  STP: FutuOrderType.Stop,
+  'STP LMT': FutuOrderType.StopLimit,
+}
+
+/** Trd_Common.OrderType → IBKR-style Order.orderType, for order tracking. */
+const IBKR_ORDER_TYPE_BY_FUTU: Record<number, string> = {
+  [FutuOrderType.Market]: 'MKT',
+  [FutuOrderType.Normal]: 'LMT',
+  [FutuOrderType.Stop]: 'STP',
+  [FutuOrderType.StopLimit]: 'STP LMT',
+  [FutuOrderType.MarketIfTouched]: 'MIT',
+  [FutuOrderType.LimitIfTouched]: 'LIT',
+  [FutuOrderType.TrailingStop]: 'TRAIL',
+  [FutuOrderType.TrailingStopLimit]: 'TRAIL LIMIT',
+}
+
+/**
+ * Trd_Common.OrderStatus → IBKR-style OrderState.status vocabulary — same
+ * convention AlpacaBroker's mapAlpacaOrderStatus uses (alpaca-contracts.ts),
+ * so the ledger/sync layer sees one consistent status vocabulary regardless
+ * of broker.
+ */
+const IBKR_STATUS_BY_FUTU: Record<number, string> = {
+  [FutuOrderStatus.Unsubmitted]: 'PendingSubmit',
+  [FutuOrderStatus.WaitingSubmit]: 'PendingSubmit',
+  [FutuOrderStatus.Submitting]: 'PreSubmitted',
+  [FutuOrderStatus.SubmitFailed]: 'ApiCancelled',
+  [FutuOrderStatus.TimeOut]: 'PreSubmitted',
+  [FutuOrderStatus.Submitted]: 'Submitted',
+  [FutuOrderStatus.FilledPart]: 'Submitted',
+  [FutuOrderStatus.FilledAll]: 'Filled',
+  [FutuOrderStatus.CancellingPart]: 'PendingCancel',
+  [FutuOrderStatus.CancellingAll]: 'PendingCancel',
+  [FutuOrderStatus.CancelledPart]: 'Cancelled',
+  [FutuOrderStatus.CancelledAll]: 'Cancelled',
+  [FutuOrderStatus.Failed]: 'ApiCancelled',
+  [FutuOrderStatus.Disabled]: 'Inactive',
+  [FutuOrderStatus.Deleted]: 'Cancelled',
+  [FutuOrderStatus.FillCancelled]: 'Cancelled',
+}
 
 /** Config trdMarket label → Trd_Common.TrdMarket enum. */
 const TRD_MARKET_BY_LABEL: Record<string, number> = {
@@ -109,6 +171,14 @@ export class FutuBroker implements IBroker {
     trdMarket: z.enum(['HK', 'US', 'CN', 'SG', 'JP']).default('HK'),
     /** Explicit business account id; omitted ⇒ first account matching env+market. */
     accID: z.string().optional(),
+    /**
+     * Trade unlock password (Trd_UnlockTrade's pwdMD5, plaintext here — this
+     * adapter hashes it locally before it ever reaches the wire). Optional:
+     * leave blank to unlock manually inside FutuOpenD/moomoo yourself each
+     * session instead of storing it here. Never persisted in git — this is
+     * runtime broker config, same storage as any other broker's API secret.
+     */
+    tradePassword: z.string().optional(),
   })
 
   static fromConfig(config: { id: string; label?: string; brokerConfig: Record<string, unknown> }): FutuBroker {
@@ -157,6 +227,20 @@ export class FutuBroker implements IBroker {
       throw new BrokerError('CONFIG', `No Futu ${this.cfg.trdEnv} account with ${this.cfg.trdMarket} market access${this.cfg.accID ? ` and accID ${this.cfg.accID}` : ''} — check FutuOpenD login and config`)
     }
     this.header = { trdEnv: wantEnv, accID: String(chosen.accID), trdMarket: wantMarket }
+
+    if (this.cfg.tradePassword) {
+      try {
+        const pwdMD5 = createHash('md5').update(this.cfg.tradePassword).digest('hex')
+        await this.gateway.unlockTrade(pwdMD5)
+        console.log(`FutuBroker[${this.id}]: trade unlocked`)
+      } catch (err) {
+        // Non-fatal: reads (quotes/positions/funds) don't need trade unlock.
+        // If unlock genuinely failed (wrong password), it resurfaces the
+        // moment an order write is attempted — FutuOpenD itself rejects it.
+        console.warn(`FutuBroker[${this.id}]: trade unlock failed — order writes will fail until this is resolved: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
     console.log(`FutuBroker[${this.id}]: connected (env=${this.cfg.trdEnv}, market=${this.cfg.trdMarket}, accID=${this.header.accID})`)
   }
 
@@ -185,7 +269,7 @@ export class FutuBroker implements IBroker {
       details.contract = makeContract(key)
       if (basic.name) details.contract.description = basic.name
       details.minSize = new Decimal(basic.lotSize || 1)
-      details.orderTypes = ''
+      details.orderTypes = 'MKT,LMT,STP,STP LMT'
       details.stockType = 'COMMON'
       return details
     } catch {
@@ -194,22 +278,105 @@ export class FutuBroker implements IBroker {
     }
   }
 
-  // ---- Trading operations (read-only: loud-refuse) ----
+  // ---- Trading operations ----
+  //
+  // Scope (Increment 2, see plans/uta-broker-futu.md): single-leg equity
+  // orders only — MKT/LMT/STP/STP LMT via Trd_PlaceOrder + Trd_ModifyOrder.
+  // Combo orders, TWAP/VWAP, and bracket TP/SL legs are explicitly refused
+  // rather than silently dropped or approximated.
+  //
+  // NOT verified against a live FutuOpenD gateway or a real Futu account —
+  // same unverified ceiling as every other Futu increment in this codebase.
+  // Start on `trdEnv: 'simulate'` and confirm behavior there first.
 
-  async placeOrder(_contract: Contract, _order: Order, _tpsl?: TpSlParams): Promise<PlaceOrderResult> {
-    return { success: false, error: READ_ONLY_REFUSAL }
+  async placeOrder(contract: Contract, order: Order, tpsl?: TpSlParams): Promise<PlaceOrderResult> {
+    if (tpsl?.takeProfit || tpsl?.stopLoss) {
+      return { success: false, error: 'Futu adapter does not support bracket take-profit/stop-loss legs yet — place the protective order as a separate order.' }
+    }
+    const key = resolveFutuKey(contract)
+    if (!key) return { success: false, error: 'Cannot resolve contract to a Futu market/code key' }
+    const trdSide = FUTU_SIDE_BY_ACTION[order.action]
+    if (trdSide === undefined) return { success: false, error: `Unsupported order action for Futu: ${order.action || '(empty)'}` }
+    const orderType = FUTU_ORDER_TYPE_BY_IBKR[order.orderType]
+    if (orderType === undefined) return { success: false, error: `Unsupported order type for Futu: ${order.orderType || '(empty)'} (supported: MKT, LMT, STP, STP LMT)` }
+    if (order.totalQuantity.equals(UNSET_DECIMAL) || order.totalQuantity.lte(0)) {
+      return { success: false, error: 'Invalid or missing order quantity' }
+    }
+    const needsPrice = orderType === FutuOrderType.Normal || orderType === FutuOrderType.StopLimit
+    const needsAux = orderType === FutuOrderType.Stop || orderType === FutuOrderType.StopLimit
+    if (needsPrice && order.lmtPrice.equals(UNSET_DECIMAL)) {
+      return { success: false, error: 'Limit price is required for this order type' }
+    }
+    if (needsAux && order.auxPrice.equals(UNSET_DECIMAL)) {
+      return { success: false, error: 'Trigger (aux) price is required for this order type' }
+    }
+    const security = keyToSecurity(key)
+    try {
+      const result = await this.gateway.placeOrder({
+        header: this.header,
+        trdSide,
+        orderType,
+        code: security.code,
+        qty: order.totalQuantity.toNumber(),
+        price: needsPrice ? order.lmtPrice.toNumber() : undefined,
+        auxPrice: needsAux ? order.auxPrice.toNumber() : undefined,
+      })
+      return { success: true, orderId: String(result.orderID) }
+    } catch (err) {
+      return { success: false, error: BrokerError.from(err).message }
+    }
   }
 
-  async modifyOrder(_orderId: string, _changes: Partial<Order>): Promise<PlaceOrderResult> {
-    return { success: false, error: READ_ONLY_REFUSAL }
+  async modifyOrder(orderId: string, changes: Partial<Order>): Promise<PlaceOrderResult> {
+    const qty = changes.totalQuantity != null && !changes.totalQuantity.equals(UNSET_DECIMAL) ? changes.totalQuantity.toNumber() : undefined
+    const price = changes.lmtPrice != null && !changes.lmtPrice.equals(UNSET_DECIMAL) ? changes.lmtPrice.toNumber() : undefined
+    const auxPrice = changes.auxPrice != null && !changes.auxPrice.equals(UNSET_DECIMAL) ? changes.auxPrice.toNumber() : undefined
+    if (qty === undefined && price === undefined && auxPrice === undefined) {
+      return { success: false, error: 'No modifiable fields provided (only qty/lmtPrice/auxPrice are supported)' }
+    }
+    try {
+      const result = await this.gateway.modifyOrder({
+        header: this.header,
+        orderID: orderId,
+        modifyOrderOp: FutuModifyOrderOp.Normal,
+        qty,
+        price,
+        auxPrice,
+      })
+      return { success: true, orderId: String(result.orderID) }
+    } catch (err) {
+      return { success: false, error: BrokerError.from(err).message }
+    }
   }
 
-  async cancelOrder(_orderId: string): Promise<PlaceOrderResult> {
-    return { success: false, error: READ_ONLY_REFUSAL }
+  async cancelOrder(orderId: string): Promise<PlaceOrderResult> {
+    try {
+      const result = await this.gateway.modifyOrder({
+        header: this.header,
+        orderID: orderId,
+        modifyOrderOp: FutuModifyOrderOp.Cancel,
+      })
+      const orderState = new OrderState()
+      orderState.status = 'Cancelled'
+      return { success: true, orderId: String(result.orderID), orderState }
+    } catch (err) {
+      return { success: false, error: BrokerError.from(err).message }
+    }
   }
 
-  async closePosition(_contract: Contract, _quantity?: Decimal): Promise<PlaceOrderResult> {
-    return { success: false, error: READ_ONLY_REFUSAL }
+  async closePosition(contract: Contract, quantity?: Decimal): Promise<PlaceOrderResult> {
+    const key = resolveFutuKey(contract)
+    if (!key) return { success: false, error: 'Cannot resolve contract to a Futu market/code key' }
+    const positions = await this.getPositions()
+    const match = positions.find((p) => this.getNativeKey(p.contract) === key)
+    if (!match) return { success: false, error: `No open position for ${key}` }
+    const closeQty = quantity != null && quantity.gt(0) ? Decimal.min(quantity, match.quantity) : match.quantity
+    if (closeQty.lte(0)) return { success: false, error: 'Nothing to close' }
+    const order = new Order()
+    order.action = match.side === 'long' ? 'SELL' : 'BUY'
+    order.orderType = 'MKT'
+    order.totalQuantity = closeQty
+    return this.placeOrder(contract, order)
   }
 
   // ---- Queries ----
@@ -273,14 +440,55 @@ export class FutuBroker implements IBroker {
   }
 
   async getOrders(_orderIds: string[]): Promise<OpenOrder[]> {
-    // Read-only increment: no orders can have been placed through this
-    // adapter, so there are no tracked ids to resolve.
-    return []
+    let rows: FutuOrderLike[]
+    try {
+      rows = await this.gateway.getOrderList(this.header)
+    } catch (err) {
+      throw BrokerError.from(err)
+    }
+    return rows.map((o) => this.toOpenOrder(o))
   }
 
-  async getOrder(_orderId: string, _symbolHint?: string): Promise<OpenOrder | null> {
-    // Read-only increment — see getOrders.
-    return null
+  async getOrder(orderId: string, _symbolHint?: string): Promise<OpenOrder | null> {
+    let rows: FutuOrderLike[]
+    try {
+      rows = await this.gateway.getOrderList(this.header)
+    } catch (err) {
+      throw BrokerError.from(err)
+    }
+    const match = rows.find((o) => String(o.orderID) === orderId)
+    return match ? this.toOpenOrder(match) : null
+  }
+
+  /** Trd_Common.Order → OpenOrder (IBKR-shaped Order + OrderState), for getOrders/getOrder. */
+  private toOpenOrder(o: FutuOrderLike): OpenOrder {
+    const prefix = trdSecMarketToPrefix(o.secMarket)
+    const contract = makeContract(`${prefix}.${o.code}`)
+    if (o.name) contract.description = o.name
+
+    const order = new Order()
+    order.action = ACTION_BY_FUTU_SIDE[o.trdSide] ?? 'BUY'
+    order.totalQuantity = new Decimal(o.qty)
+    order.orderType = IBKR_ORDER_TYPE_BY_FUTU[o.orderType] ?? 'LMT'
+    if (o.price !== undefined) order.lmtPrice = new Decimal(o.price)
+    if (o.auxPrice !== undefined) order.auxPrice = new Decimal(o.auxPrice)
+    if (o.fillQty !== undefined) order.filledQuantity = new Decimal(o.fillQty)
+    // Futu orderID is uint64 — IBKR's orderId field is a number and would
+    // lose precision. Leave at default 0 (same precedent as AlpacaBroker's
+    // UUID ids); the real id lives in OpenOrder.orderId below.
+    order.orderId = 0
+
+    const orderState = new OrderState()
+    orderState.status = IBKR_STATUS_BY_FUTU[o.orderStatus] ?? 'Submitted'
+    if (o.lastErrMsg) orderState.rejectReason = o.lastErrMsg
+
+    return {
+      contract,
+      order,
+      orderState,
+      orderId: String(o.orderID),
+      ...(o.fillAvgPrice !== undefined && { avgFillPrice: dec(o.fillAvgPrice) }),
+    }
   }
 
   async getQuote(contract: Contract): Promise<Quote> {
@@ -310,7 +518,7 @@ export class FutuBroker implements IBroker {
   /**
    * Live basic-quote push (Qot_Sub SubType_Basic → Qot_UpdateBasicQot).
    *
-   * NOT part of `IBroker` yet — see plans/futu-realtime-quotes.md Increment 1.
+   * Fulfills `IBroker.subscribeQuote?` (see plans/futu-realtime-quotes.md).
    * Deliberately returns a distinct `FutuBasicQuoteUpdate` shape rather than
    * `Quote`: the underlying `BasicQot` push message carries no bid/ask (that
    * lives behind the separate order-book subscription, out of scope here),
@@ -370,8 +578,7 @@ export class FutuBroker implements IBroker {
   // ---- Capabilities ----
 
   getCapabilities(): AccountCapabilities {
-    // Empty supportedOrderTypes states the read-only contract explicitly.
-    return { supportedSecTypes: ['STK'], supportedOrderTypes: [] }
+    return { supportedSecTypes: ['STK'], supportedOrderTypes: ['MKT', 'LMT', 'STP', 'STP LMT'] }
   }
 
   // ---- Contract identity ----

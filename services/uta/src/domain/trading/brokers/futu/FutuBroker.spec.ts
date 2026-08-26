@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import Decimal from 'decimal.js'
+import { createHash } from 'node:crypto'
 import { Contract, Order } from '@traderalice/ibkr'
 import { FutuBroker } from './FutuBroker.js'
 import { makeContract, parseFutuKey, resolveFutuKey, securityToKey, keyToSecurity, trdSecMarketToPrefix } from './futu-contracts.js'
@@ -26,6 +27,10 @@ function makeGateway(overrides: Partial<FutuGateway> = {}): FutuGateway {
     getSecuritySnapshot: vi.fn(async () => []),
     getStaticInfo: vi.fn(async () => []),
     subscribeBasicQuote: vi.fn(async () => vi.fn(async () => {})),
+    unlockTrade: vi.fn(async () => {}),
+    placeOrder: vi.fn(async () => ({ orderID: '900000001' })),
+    modifyOrder: vi.fn(async () => ({ orderID: '900000001' })),
+    getOrderList: vi.fn(async () => []),
     ...overrides,
   }
 }
@@ -316,30 +321,250 @@ describe('FutuBroker.getContractDetails', () => {
   })
 })
 
-// ==================== Read-only refusal ====================
+// ==================== Trading operations (Increment 2) ====================
 
-describe('FutuBroker read-only refusal', () => {
-  it('refuses every order write without touching the gateway', async () => {
+describe('FutuBroker.placeOrder', () => {
+  it('places a market order and resolves the broker-assigned order id', async () => {
+    const gateway = makeGateway({ placeOrder: vi.fn(async () => ({ orderID: '77001' })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    order.totalQuantity = new Decimal(100)
+    const result = await broker.placeOrder(makeContract('HK.00700'), order)
+    expect(result).toEqual({ success: true, orderId: '77001' })
+    expect(gateway.placeOrder).toHaveBeenCalledWith({
+      header: { trdEnv: 0, accID: '11111', trdMarket: 1 },
+      trdSide: 1, // TrdSide_Buy
+      orderType: 2, // OrderType_Market
+      code: '00700',
+      qty: 100,
+      price: undefined,
+      auxPrice: undefined,
+    })
+  })
+
+  it('places a limit order with the limit price', async () => {
+    const gateway = makeGateway({ placeOrder: vi.fn(async () => ({ orderID: '77002' })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const order = new Order()
+    order.action = 'SELL'
+    order.orderType = 'LMT'
+    order.totalQuantity = new Decimal(10)
+    order.lmtPrice = new Decimal('123.45')
+    const result = await broker.placeOrder(makeContract('US.AAPL'), order)
+    expect(result.success).toBe(true)
+    expect(gateway.placeOrder).toHaveBeenCalledWith(expect.objectContaining({
+      trdSide: 2, // TrdSide_Sell
+      orderType: 1, // OrderType_Normal
+      price: 123.45,
+    }))
+  })
+
+  it('rejects a limit order missing its limit price without touching the gateway', async () => {
     const gateway = makeGateway()
     const broker = makeBroker(gateway)
     await broker.init()
     const order = new Order()
-    const results = await Promise.all([
-      broker.placeOrder(makeContract('HK.00700'), order),
-      broker.modifyOrder('1', {}),
-      broker.cancelOrder('1'),
-      broker.closePosition(makeContract('HK.00700')),
-    ])
-    for (const r of results) {
-      expect(r.success).toBe(false)
-      expect(r.error).toMatch(/read-only/i)
-    }
-    expect(await broker.getOrders(['1'])).toEqual([])
+    order.action = 'BUY'
+    order.orderType = 'LMT'
+    order.totalQuantity = new Decimal(1)
+    const result = await broker.placeOrder(makeContract('US.AAPL'), order)
+    expect(result).toEqual({ success: false, error: expect.stringMatching(/limit price/i) })
+    expect(gateway.placeOrder).not.toHaveBeenCalled()
   })
 
-  it('declares no supported order types', async () => {
+  it('rejects a stop order missing its trigger price', async () => {
     const broker = makeBroker(makeGateway())
-    expect(broker.getCapabilities()).toEqual({ supportedSecTypes: ['STK'], supportedOrderTypes: [] })
+    await broker.init()
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'STP'
+    order.totalQuantity = new Decimal(1)
+    const result = await broker.placeOrder(makeContract('US.AAPL'), order)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/trigger|aux/i)
+  })
+
+  it('rejects an unsupported order type', async () => {
+    const broker = makeBroker(makeGateway())
+    await broker.init()
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'TRAIL'
+    order.totalQuantity = new Decimal(1)
+    const result = await broker.placeOrder(makeContract('US.AAPL'), order)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/unsupported order type/i)
+  })
+
+  it('rejects bracket take-profit/stop-loss requests rather than silently dropping them', async () => {
+    const gateway = makeGateway()
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    order.totalQuantity = new Decimal(1)
+    const result = await broker.placeOrder(makeContract('US.AAPL'), order, { takeProfit: { price: '200' } })
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/bracket/i)
+    expect(gateway.placeOrder).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a gateway rejection as a failed result rather than throwing', async () => {
+    const gateway = makeGateway({ placeOrder: vi.fn(async () => { throw new Error('FutuOpenD PlaceOrder retType=-1: trade not unlocked') }) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    order.totalQuantity = new Decimal(1)
+    const result = await broker.placeOrder(makeContract('US.AAPL'), order)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/trade not unlocked/i)
+  })
+})
+
+describe('FutuBroker.modifyOrder / cancelOrder', () => {
+  it('modifies price and quantity via ModifyOrderOp_Normal', async () => {
+    const gateway = makeGateway({ modifyOrder: vi.fn(async () => ({ orderID: '77001' })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const result = await broker.modifyOrder('77001', { totalQuantity: new Decimal(50), lmtPrice: new Decimal('10.5') })
+    expect(result).toEqual({ success: true, orderId: '77001' })
+    expect(gateway.modifyOrder).toHaveBeenCalledWith({
+      header: { trdEnv: 0, accID: '11111', trdMarket: 1 },
+      orderID: '77001',
+      modifyOrderOp: 1, // ModifyOrderOp_Normal
+      qty: 50,
+      price: 10.5,
+      auxPrice: undefined,
+    })
+  })
+
+  it('rejects a modify request with no recognizable field changes', async () => {
+    const gateway = makeGateway()
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const result = await broker.modifyOrder('77001', {})
+    expect(result.success).toBe(false)
+    expect(gateway.modifyOrder).not.toHaveBeenCalled()
+  })
+
+  it('cancels via ModifyOrderOp_Cancel and reports a Cancelled state', async () => {
+    const gateway = makeGateway({ modifyOrder: vi.fn(async () => ({ orderID: '77001' })) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const result = await broker.cancelOrder('77001')
+    expect(result.success).toBe(true)
+    expect(result.orderState?.status).toBe('Cancelled')
+    expect(gateway.modifyOrder).toHaveBeenCalledWith({
+      header: { trdEnv: 0, accID: '11111', trdMarket: 1 },
+      orderID: '77001',
+      modifyOrderOp: 2, // ModifyOrderOp_Cancel
+    })
+  })
+})
+
+describe('FutuBroker.closePosition', () => {
+  it('places an opposite-side market order sized to the open position', async () => {
+    const gateway = makeGateway({
+      getPositionList: vi.fn(async () => [
+        { positionID: '1', positionSide: 0, code: '00700', name: 'Tencent', qty: 200, canSellQty: 200, price: 300, val: 60000, plVal: 100, secMarket: 1 },
+      ]),
+      placeOrder: vi.fn(async () => ({ orderID: '88001' })),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const result = await broker.closePosition(makeContract('HK.00700'))
+    expect(result).toEqual({ success: true, orderId: '88001' })
+    expect(gateway.placeOrder).toHaveBeenCalledWith(expect.objectContaining({
+      trdSide: 2, // SELL to close a long
+      orderType: 2, // MKT
+      qty: 200,
+    }))
+  })
+
+  it('errors when there is no open position for the contract', async () => {
+    const broker = makeBroker(makeGateway({ getPositionList: vi.fn(async () => []) }))
+    await broker.init()
+    const result = await broker.closePosition(makeContract('HK.00700'))
+    expect(result).toEqual({ success: false, error: expect.stringMatching(/no open position/i) })
+  })
+})
+
+describe('FutuBroker.getOrders / getOrder', () => {
+  const ORDER_ROW = {
+    trdSide: 1, orderType: 1, orderStatus: 5, orderID: '77001', orderIDEx: 'ex-1',
+    code: '00700', name: 'Tencent', qty: 100, price: 123.4, createTime: '2024-01-01 09:30:00',
+    updateTime: '2024-01-01 09:30:01', fillQty: 0, secMarket: 1,
+  }
+
+  it('maps Trd_Common.Order rows into OpenOrder with IBKR-style status', async () => {
+    const gateway = makeGateway({ getOrderList: vi.fn(async () => [ORDER_ROW]) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const orders = await broker.getOrders(['77001'])
+    expect(orders).toHaveLength(1)
+    expect(orders[0].orderId).toBe('77001')
+    expect(orders[0].order.action).toBe('BUY')
+    expect(orders[0].order.orderType).toBe('LMT')
+    expect(orders[0].orderState.status).toBe('Submitted')
+    expect(orders[0].contract.symbol).toBe('00700')
+  })
+
+  it('getOrder finds the matching row by id and returns null otherwise', async () => {
+    const gateway = makeGateway({ getOrderList: vi.fn(async () => [ORDER_ROW]) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    expect((await broker.getOrder('77001'))?.orderId).toBe('77001')
+    expect(await broker.getOrder('does-not-exist')).toBeNull()
+  })
+
+  it('maps a filled order status to Filled', async () => {
+    const gateway = makeGateway({ getOrderList: vi.fn(async () => [{ ...ORDER_ROW, orderStatus: 11 }]) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    const orders = await broker.getOrders(['77001'])
+    expect(orders[0].orderState.status).toBe('Filled')
+  })
+})
+
+describe('FutuBroker capabilities', () => {
+  it('declares single-leg equity order types now that writes are implemented', async () => {
+    const broker = makeBroker(makeGateway())
+    expect(broker.getCapabilities()).toEqual({ supportedSecTypes: ['STK'], supportedOrderTypes: ['MKT', 'LMT', 'STP', 'STP LMT'] })
+  })
+})
+
+// ==================== Trade unlock ====================
+
+describe('FutuBroker trade unlock', () => {
+  it('unlocks trading with the MD5 hash of the configured password', async () => {
+    const gateway = makeGateway({ unlockTrade: vi.fn(async () => {}) })
+    const parsed = FutuBroker.configSchema.parse({ trdEnv: 'simulate', trdMarket: 'HK', tradePassword: 'hunter2' })
+    const broker = new FutuBroker({ ...parsed, id: 'futu-test' }, () => gateway)
+    await broker.init()
+    const expectedMD5 = createHash('md5').update('hunter2').digest('hex')
+    expect(gateway.unlockTrade).toHaveBeenCalledWith(expectedMD5)
+  })
+
+  it('skips unlock entirely when no trade password is configured', async () => {
+    const gateway = makeGateway({ unlockTrade: vi.fn(async () => {}) })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    expect(gateway.unlockTrade).not.toHaveBeenCalled()
+  })
+
+  it('does not fail init when unlock itself fails (reads must still work)', async () => {
+    const gateway = makeGateway({ unlockTrade: vi.fn(async () => { throw new Error('wrong trade password') }) })
+    const parsed = FutuBroker.configSchema.parse({ trdEnv: 'simulate', trdMarket: 'HK', tradePassword: 'wrong' })
+    const broker = new FutuBroker({ ...parsed, id: 'futu-test' }, () => gateway)
+    await expect(broker.init()).resolves.toBeUndefined()
+    await expect(broker.getAccount()).resolves.toBeDefined()
   })
 })
 

@@ -32,5 +32,9 @@ declare module 'futu-api' {
     GetSecuritySnapshot(req: unknown): Promise<FtResponseEnvelope>
     GetStaticInfo(req: unknown): Promise<FtResponseEnvelope>
     Sub(req: unknown): Promise<FtResponseEnvelope>
+    UnlockTrade(req: unknown): Promise<FtResponseEnvelope>
+    PlaceOrder(req: unknown): Promise<FtResponseEnvelope>
+    ModifyOrder(req: unknown): Promise<FtResponseEnvelope>
+    GetOrderList(req: unknown): Promise<FtResponseEnvelope>
   }
 }

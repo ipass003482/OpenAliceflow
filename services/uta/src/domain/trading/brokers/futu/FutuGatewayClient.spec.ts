@@ -22,6 +22,10 @@ const { FakeWs, getLastInstance } = vi.hoisted(() => {
     })
     stop = vi.fn()
     Sub = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: {} }))
+    UnlockTrade = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: {} }))
+    PlaceOrder = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderID: '900001', orderIDEx: 'ex-900001' } }))
+    ModifyOrder = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderID: '900001' } }))
+    GetOrderList = vi.fn(async (_req: unknown) => ({ retType: 0, s2c: { orderList: [] } }))
 
     constructor() {
       lastInstance = this
@@ -142,5 +146,47 @@ describe('FutuGatewayClient.subscribeBasicQuote', () => {
     // (defensive — stop() already nulls `this.ws`, this exercises the map).
     pushBasicQot(ws, [{ security: SEC_700 }])
     expect(a).toEqual([])
+  })
+})
+
+const HEADER = { trdEnv: 0, accID: '11111', trdMarket: 1 }
+
+describe('FutuGatewayClient trading writes', () => {
+  it('unlockTrade sends Trd_UnlockTrade with the given pwdMD5', async () => {
+    const { client, ws } = await connectedClient()
+    await client.unlockTrade('deadbeef')
+    expect(ws.UnlockTrade).toHaveBeenCalledWith({ c2s: { unlock: true, pwdMD5: 'deadbeef' } })
+  })
+
+  it('placeOrder sends Trd_PlaceOrder and resolves the assigned order id', async () => {
+    const { client, ws } = await connectedClient()
+    const result = await client.placeOrder({ header: HEADER, trdSide: 1, orderType: 2, code: '00700', qty: 100 })
+    expect(result).toEqual({ orderID: '900001', orderIDEx: 'ex-900001' })
+    expect(ws.PlaceOrder).toHaveBeenCalledWith({
+      c2s: { header: HEADER, trdSide: 1, orderType: 2, code: '00700', qty: 100, price: undefined, auxPrice: undefined, timeInForce: undefined },
+    })
+  })
+
+  it('modifyOrder sends Trd_ModifyOrder for both price/qty changes and cancel', async () => {
+    const { client, ws } = await connectedClient()
+    const result = await client.modifyOrder({ header: HEADER, orderID: '900001', modifyOrderOp: 2 })
+    expect(result).toEqual({ orderID: '900001' })
+    expect(ws.ModifyOrder).toHaveBeenCalledWith({
+      c2s: { header: HEADER, orderID: '900001', modifyOrderOp: 2, qty: undefined, price: undefined, auxPrice: undefined },
+    })
+  })
+
+  it('getOrderList sends Trd_GetOrderList and returns the order rows', async () => {
+    const row = { trdSide: 1, orderType: 1, orderStatus: 5, orderID: '900001', orderIDEx: 'ex', code: '00700', name: 'Tencent', qty: 100, createTime: '', updateTime: '' }
+    const { client, ws } = await connectedClient()
+    ws.GetOrderList.mockResolvedValueOnce({ retType: 0, s2c: { orderList: [row] } })
+    const rows = await client.getOrderList(HEADER)
+    expect(rows).toEqual([row])
+    expect(ws.GetOrderList).toHaveBeenCalledWith({ c2s: { header: HEADER } })
+  })
+
+  it('getOrderList defaults to an empty array when orderList is absent', async () => {
+    const { client } = await connectedClient()
+    expect(await client.getOrderList(HEADER)).toEqual([])
   })
 })
