@@ -9,7 +9,7 @@
 
 import Decimal from 'decimal.js'
 import { Contract, Order, ContractDescription, ContractDetails, UNSET_DECIMAL, UNSET_INTEGER, UNSET_DOUBLE } from '@traderalice/ibkr'
-import { BrokerError, type IBroker, type AccountInfo, type Position, type OpenOrder, type PlaceOrderResult, type Quote, type MarketClock, type AccountCapabilities, type BrokerHealth, type BrokerHealthInfo, type BrokerConnectionStateEvent, type UTAReach, type UTATier, type TpSlParams, type Bar, type BarParams, type ExpandContractFilters, type ContractExpansion, type SubAccountRef } from './brokers/types.js'
+import { BrokerError, type IBroker, type AccountInfo, type Position, type OpenOrder, type PlaceOrderResult, type Quote, type QuoteUpdate, type MarketClock, type AccountCapabilities, type BrokerHealth, type BrokerHealthInfo, type BrokerConnectionStateEvent, type UTAReach, type UTATier, type TpSlParams, type Bar, type BarParams, type ExpandContractFilters, type ContractExpansion, type SubAccountRef } from './brokers/types.js'
 
 const REACH_RANK: Record<UTAReach, number> = { down: 0, connected: 1, readable: 2 }
 import { TradingGit } from './git/TradingGit.js'
@@ -1134,6 +1134,34 @@ export class UnifiedTradingAccount {
     const quote = await this._callBroker(() => this.broker.getQuote(resolved))
     this.stampAliceId(quote.contract)
     return quote
+  }
+
+  /** True when this account's broker implements the optional live push
+   *  capability. Callers (HTTP routes, tools) that need to decide between a
+   *  live-push path and a poll-`getQuote` fallback should check this rather
+   *  than calling `subscribeQuote` and catching — the CONFIG throw below
+   *  exists for callers that already know they need push and want a loud
+   *  failure, not a silent capability probe. */
+  get supportsLiveQuote(): boolean {
+    return typeof this.broker.subscribeQuote === 'function'
+  }
+
+  /**
+   * Live quote push, mirroring `getQuote`'s aliceId expansion and contract
+   * stamping. Loud-refuses (CONFIG) when the broker has no `subscribeQuote`
+   * — this class does not silently degrade to polling on the caller's
+   * behalf; that decision belongs to the HTTP/UI layer, which knows what
+   * the caller actually needs (see plans/futu-realtime-quotes.md).
+   */
+  async subscribeQuote(contract: Contract, onUpdate: (update: QuoteUpdate) => void): Promise<() => Promise<void>> {
+    if (typeof this.broker.subscribeQuote !== 'function') {
+      throw new BrokerError('CONFIG', `Account "${this.label}" does not support live quote push.`)
+    }
+    const resolved = this._expandAliceIdIfNeeded(contract)
+    return this._callBroker(() => this.broker.subscribeQuote!(resolved, (update) => {
+      this.stampAliceId(update.contract)
+      onUpdate(update)
+    }))
   }
 
   /**

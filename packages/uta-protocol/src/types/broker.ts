@@ -320,6 +320,24 @@ export interface MarketClock {
 }
 
 /**
+ * A pushed quote tick from a broker's live subscription. A structural
+ * superset/subset relative to `Quote`: `bid`/`ask` are OPTIONAL here — not
+ * every broker's push channel carries them (e.g. Futu's basic-quote push
+ * has no order-book data; that lives behind a separate subscription type).
+ * Absent means "this push doesn't carry it", never a fabricated zero.
+ */
+export interface QuoteUpdate {
+  contract: Contract
+  last: string
+  bid?: string
+  ask?: string
+  volume?: string
+  high?: string
+  low?: string
+  timestamp: Date
+}
+
+/**
  * Normalized bar interval — Alice-facing enum. Each broker maps this to its
  * native bar-size / period / timeframe string. Keep this list small and
  * additive; brokers declare which subset they support via
@@ -584,6 +602,18 @@ export interface IBroker<TMeta = unknown> {
   getOpenOrders?(): Promise<OpenOrder[]>
   getQuote(contract: Contract): Promise<Quote>
   getMarketClock(): Promise<MarketClock>
+
+  /**
+   * Optional live quote push. Brokers without a real subscription mechanism
+   * (most of them today) simply omit this — callers must fall back to
+   * polling `getQuote()` when it's undefined, never assume it exists.
+   * Returns an unsubscribe function; calling it stops further `onUpdate`
+   * calls for this specific subscription (implementations must not let an
+   * unrelated caller's unsubscribe silently kill a still-wanted feed —
+   * see `FutuGatewayClient`'s reference-counted unsubscribe for the
+   * pattern a shared-connection broker needs).
+   */
+  subscribeQuote?(contract: Contract, onUpdate: (update: QuoteUpdate) => void): Promise<() => Promise<void>>
 
   /**
    * Historical OHLCV bars. Optional — brokers without time-series data

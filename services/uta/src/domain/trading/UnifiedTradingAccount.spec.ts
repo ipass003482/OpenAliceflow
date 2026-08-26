@@ -799,6 +799,65 @@ describe('UTA — contractFromAliceId', () => {
   })
 })
 
+// ==================== subscribeQuote (live push) ====================
+
+describe('UTA — subscribeQuote', () => {
+  it('reports supportsLiveQuote: false for a broker without the optional method', () => {
+    const { uta } = createUTA() // plain MockBroker declares no subscribeQuote
+    expect(uta.supportsLiveQuote).toBe(false)
+  })
+
+  it('loud-refuses with CONFIG when the broker has no subscribeQuote', async () => {
+    const { uta } = createUTA()
+    await expect(uta.subscribeQuote(makeContract({ aliceId: 'mock-paper|AAPL' }), () => {}))
+      .rejects.toMatchObject({ name: 'BrokerError', code: 'CONFIG' })
+  })
+
+  function pushableBroker(): MockBroker {
+    const b = new MockBroker()
+    const unsubscribe = vi.fn(async () => {})
+    ;(b as unknown as Record<string, unknown>).subscribeQuote = vi.fn(
+      async (contract: Contract, onUpdate: (u: unknown) => void) => {
+        onUpdate({ contract, last: '150.5', high: '151', low: '149', timestamp: new Date('2026-08-26T00:00:00Z') })
+        return unsubscribe
+      },
+    )
+    return b
+  }
+
+  it('reports supportsLiveQuote: true and delegates to the broker', async () => {
+    const { uta, broker } = createUTA(pushableBroker())
+    expect(uta.supportsLiveQuote).toBe(true)
+
+    const updates: unknown[] = []
+    await uta.subscribeQuote(makeContract({ aliceId: 'mock-paper|AAPL' }), (u) => updates.push(u))
+
+    expect((broker as unknown as { subscribeQuote: ReturnType<typeof vi.fn> }).subscribeQuote).toHaveBeenCalledTimes(1)
+    expect(updates).toHaveLength(1)
+  })
+
+  it('stamps aliceId on the contract of every pushed update, like getQuote does', async () => {
+    const { uta } = createUTA(pushableBroker())
+    const updates: Array<{ contract: Contract }> = []
+    await uta.subscribeQuote(makeContract({ aliceId: 'mock-paper|AAPL' }), (u) => updates.push(u as never))
+
+    expect(updates[0].contract.aliceId).toBe('mock-paper|AAPL')
+  })
+
+  it('returns the broker-supplied unsubscribe function unchanged', async () => {
+    const unsubscribe = vi.fn(async () => {})
+    const broker = new MockBroker()
+    ;(broker as unknown as Record<string, unknown>).subscribeQuote = vi.fn(
+      async (_contract: Contract, _onUpdate: (u: unknown) => void) => unsubscribe,
+    )
+    const { uta } = createUTA(broker)
+    const stop = await uta.subscribeQuote(makeContract({ aliceId: 'mock-paper|AAPL' }), () => {})
+    expect(stop).toBe(unsubscribe)
+    await stop()
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+})
+
 // ==================== stageCancelOrder ====================
 
 describe('UTA — stageCancelOrder', () => {

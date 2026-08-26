@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
+import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import type { UTAEngineContext } from '../types.js'
 import { BrokerError } from '../domain/trading/brokers/types.js'
@@ -325,6 +326,50 @@ export function createTradingRoutes(ctx: UTAEngineContext) {
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
     }
+  })
+
+  // Live quote push (SSE). `EventSource` is GET-only, so contract fields
+  // travel as query params (`symbol` and/or `aliceId`) rather than a JSON
+  // body like the POST form above. 501 when the account's broker has no
+  // `subscribeQuote` — callers must fall back to polling GET/POST
+  // `/uta/:id/quote` themselves; this route never silently degrades to
+  // polling on their behalf (see plans/futu-realtime-quotes.md).
+  app.get('/uta/:id/quote-stream', async (c) => {
+    const account = resolveAccount(ctx, c)
+    if (!account) return c.json({ error: 'Account not found' }, 404)
+    if (!account.supportsLiveQuote) {
+      return c.json({
+        error: 'Live quote push is not supported by this account',
+        hint: 'Fall back to polling GET or POST /uta/:id/quote for this contract.',
+      }, 501)
+    }
+    const symbol = c.req.query('symbol')
+    const aliceId = c.req.query('aliceId')
+    if (!symbol && !aliceId) {
+      return c.json({ error: 'symbol or aliceId query parameter is required' }, 400)
+    }
+    const { Contract } = await import('@traderalice/ibkr')
+    const contract = new Contract()
+    if (symbol) contract.symbol = symbol
+    if (aliceId) contract.aliceId = aliceId
+
+    return streamSSE(c, async (stream) => {
+      let unsubscribe: (() => Promise<void>) | null = null
+      try {
+        unsubscribe = await account.subscribeQuote(contract, (update) => {
+          stream.writeSSE({ event: 'quote', data: JSON.stringify(update) }).catch(() => {})
+        })
+      } catch (err) {
+        const be = err instanceof BrokerError ? err : BrokerError.from(err)
+        await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: be.message, code: be.code }) }).catch(() => {})
+        return
+      }
+      stream.onAbort(() => { void unsubscribe?.().catch(() => {}) })
+      // Keep the handler alive until the client disconnects — onAbort fires
+      // then and releases the subscription. This request never resolves on
+      // its own, matching the sse-transport precedent's keep-alive pattern.
+      await new Promise<void>(() => {})
+    })
   })
 
   // Hub → leaves expansion (bond issuers, option chains, futures months).

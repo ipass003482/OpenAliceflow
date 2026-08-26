@@ -79,6 +79,26 @@ not part of the `IBroker` interface it implements), so nothing upstream
 breaks or depends on it yet. Increments 2–5 remain unstarted and unscoped
 until layer 1 is verified.
 
+### Target surface decision (recorded after increment 1)
+
+`ui/src/components/market/QuoteHeader.tsx` (the "Market" page's per-symbol
+quote header) carries an explicit comment: "Bid / ask intentionally
+omitted — they're real-time L1 quote data that belongs at the execution
+layer (UTA), not in analysis." That boundary put broker L1 quotes only on
+`UTADetailPage.tsx` (the account/positions surface), never on the
+vendor-fed "Market" research page.
+
+The maintainer explicitly asked for BOTH surfaces to be live and accepted
+overriding that boundary comment. Recorded choice for increment 5: keep
+`UTADetailPage`'s position mark price as the primary, architecturally
+natural consumer of the live push; additionally layer a live-quote overlay
+onto the Market page's `QuoteHeader`/`EquityDetail` — shown only when the
+viewed symbol resolves to a connected UTA account that supports
+`subscribeQuote` — rather than ripping out the vendor-quote fallback
+entirely (a symbol with no matching broker account still needs the
+existing 60s-polled vendor quote). This is a deliberate, recorded departure
+from the prior design intent, not a silent regression.
+
 ## Ordered increments
 
 - [x] **Increment 1 — FutuGateway/FutuBroker subscription (this increment)**
@@ -109,21 +129,53 @@ until layer 1 is verified.
     mocked `futu-api` module (8 tests). 41/41 pass.
   - `npx tsc --noEmit` (repo root) and `services/uta` typecheck unchanged
     vs. the pre-existing 7-error baseline (zero new errors).
-- [ ] **Increment 2 — `IBroker` contract.** Add an optional
-  `subscribeQuote?(contract, onUpdate): Promise<() => Promise<void>>` (exact
-  shape TBD at increment start) to `packages/uta-protocol/src/types/broker.ts`,
-  documented as optional so CCXT/Alpaca/IBKR/Longbridge/Mock are unaffected.
-- [ ] **Increment 3 — UTA HTTP boundary.** A WebSocket (or SSE) endpoint
-  under `services/uta/src/http/` that a client can open per-contract and
-  receive push frames on, backed by `IBroker.subscribeQuote` where
-  available; graceful "not supported" for brokers without it.
-- [ ] **Increment 4 — Alice webui relay.** Bridge UTA's live channel into
-  Alice's own WS/IPC surface (pattern precedent: Workspace PTY WS), scoped
-  per open "Market" view rather than always-on for every UTA account.
-- [ ] **Increment 5 — "Market" UI page.** Replace/augment the polling
-  fetch with a live-channel subscription; visually distinguish a
-  push-backed live quote from a polled one (reuse `BarCapability`
-  ideas — `'realtime'` push vs `'delayed'`/polled).
+- [x] **Increment 2 — `IBroker` contract.** Added `QuoteUpdate` (contract,
+  last, timestamp required; bid/ask/volume/high/low optional — a push
+  channel may not carry all of them) and an optional
+  `subscribeQuote?(contract, onUpdate): Promise<() => Promise<void>>` to
+  `packages/uta-protocol/src/types/broker.ts`. `FutuBroker`'s existing
+  `subscribeQuote` (typed with the richer `FutuBasicQuoteUpdate`) satisfies
+  this optional method structurally — TS method-shorthand bivariance means
+  no change to `FutuBroker.ts` was needed. Added a mirror
+  `UnifiedTradingAccount.subscribeQuote` (aliceId expansion + contract
+  stamping, same pattern as `getQuote`) and a `supportsLiveQuote` getter so
+  callers can branch instead of catching. 5 new unit tests
+  (`UnifiedTradingAccount.spec.ts`); full file 118/118 pass; other brokers'
+  specs (Longbridge, registry, Mock) unaffected — optional methods can't
+  break an existing `implements IBroker`.
+- [x] **Increment 3 — UTA HTTP boundary.** `GET /uta/:id/quote-stream` in
+  `services/uta/src/http/routes-trading.ts` using `streamSSE` from
+  `hono/streaming` (no prior live route to copy — the `chat.ts` SSE
+  precedent implied by an old test comment no longer exists, per the World-B
+  in-process-AI-loop removal). `EventSource` is GET-only, so the contract
+  travels as `?symbol=` or `?aliceId=` query params, unlike the existing
+  POST `/uta/:id/quote`. Returns 404 (unknown account), 501 (broker has no
+  `subscribeQuote` — never silently falls back to polling on the caller's
+  behalf) or 400 (missing symbol/aliceId) before opening the stream;
+  pushes `event: quote` frames, or one `event: error` frame if the initial
+  `subscribeQuote` call itself throws (e.g. "not entitled for real-time
+  quotes"). `stream.onAbort` releases the broker-side subscription on
+  client disconnect. 6 new tests in
+  `routes-trading-quote-stream.spec.ts`; full `services/uta/src/http/`
+  suite 35/35 pass.
+- [x] **Increment 4 — Alice webui relay.** No code change needed:
+  `src/webui/routes/trading-proxy.ts`'s existing transparent passthrough
+  (`return new Response(upstream.body, { status, statusText, headers })`)
+  already forwards a chunked SSE body end-to-end — its own doc comment
+  already claimed this ("SSE headers pass through"), and a new integration
+  test in `trading-proxy.spec.ts` now proves it against a real streaming
+  `ReadableStream` upstream (not just buffered JSON like the file's other
+  tests), confirming the claim instead of trusting it. 13/13 pass.
+- [ ] **Increment 5 — UI.** Per the maintainer's explicit decision (see
+  "Target surface decision" above), wire a live-quote hook into BOTH
+  `UTADetailPage.tsx` (position mark price — the architecturally natural
+  consumer) AND the Market page's `QuoteHeader.tsx`/`EquityDetail.tsx`
+  (overlaying the vendor-polled quote when the viewed symbol resolves to a
+  connected UTA account with `subscribeQuote` support), overriding that
+  file's prior "bid/ask belongs to execution layer" boundary comment.
+  Needs its own design pass (EventSource client hook shape, symbol→UTA
+  resolution reusing the existing `contracts/search` bridge, visual "live"
+  vs "delayed" distinction) before writing frontend code — not started.
 
 ## Explicitly out of scope for increment 1
 

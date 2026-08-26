@@ -129,4 +129,34 @@ describe('createTradingProxyRoutes — UTA optional carrier', () => {
       detail: 'ECONNREFUSED',
     })
   })
+
+  it('forwards an SSE upstream response unchanged — headers and streamed body', async () => {
+    // Simulates UTA's GET /uta/:id/quote-stream: a chunked text/event-stream
+    // body. This proxy has no route-specific SSE handling — it forwards
+    // `upstream.body` verbatim (see the file-level doc comment) — so the
+    // real question this test answers is whether that generic passthrough
+    // actually survives a streaming body end-to-end through Hono, not just
+    // a buffered JSON one like the other tests in this file.
+    const encoder = new TextEncoder()
+    const upstreamStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: quote\ndata: {"last":"150.5"}\n\n'))
+        controller.close()
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    ))
+    const app = createTradingProxyRoutes({ utaBaseUrl: 'http://127.0.0.1:47333' })
+    const res = await app.request('/api/trading/uta/futu-sim/quote-stream?symbol=AAPL')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/text\/event-stream/)
+    const text = await res.text()
+    expect(text).toContain('event: quote')
+    expect(text).toContain('150.5')
+  })
 })

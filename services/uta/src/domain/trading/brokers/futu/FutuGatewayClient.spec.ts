@@ -46,7 +46,7 @@ async function connectedClient(): Promise<{ client: FutuGatewayClient; ws: Insta
 const SEC_700 = { market: 1, code: '00700' }
 const SEC_AAPL = { market: 11, code: 'AAPL' }
 
-function pushBasicQot(ws: FakeWs, rows: Array<{ security: { market: number; code: string } }>): void {
+function pushBasicQot(ws: InstanceType<typeof FakeWs>, rows: Array<{ security: { market: number; code: string } }>): void {
   ws.onPush?.(3005, { s2c: { basicQotList: rows } })
 }
 
