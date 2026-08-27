@@ -408,6 +408,8 @@ const tradingSchema = z.object({
    * connect to public crypto venues.
    */
   keylessDataSources: z.array(keylessDataSourceSchema).default([]),
+  /** Global kill switch for automated execution. */
+  automationEmergencyStop: z.boolean().optional(),
 })
 
 export const toolsSchema = z.object({
@@ -437,6 +439,25 @@ const guardConfigSchema = z.object({
   type: z.string(),
   options: z.record(z.string(), z.unknown()).default({}),
 })
+export const autoTradingPolicySchema = z.object({
+  enabled: z.boolean().default(false),
+  maxOrderNotional: z.number().positive().default(1_000),
+  maxSymbolExposurePercent: z.number().positive().max(100).default(5),
+  maxDailyLoss: z.number().positive().default(500),
+  maxOrdersPerHour: z.number().int().positive().default(5),
+  maxOrdersPerDay: z.number().int().positive().default(20),
+  maxSlippageBps: z.number().positive().max(10_000).default(25),
+  maxQuoteAgeMs: z.number().int().positive().default(5_000),
+  allowedAliceIds: z.array(z.string().min(3)).default([]),
+  pauseAfterConsecutiveErrors: z.number().int().positive().default(3),
+}).superRefine((policy, ctx) => {
+  if (policy.enabled && policy.allowedAliceIds.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['allowedAliceIds'], message: 'Automatic trading requires at least one allowed aliceId' })
+  }
+})
+
+export type AutoTradingPolicy = z.infer<typeof autoTradingPolicySchema>
+
 
 /**
  * One Unified Trading Account. The user-facing concept — one preset
@@ -450,6 +471,9 @@ export const utaConfigSchema = z.object({
   label: z.string().optional(),
   /** Broker preset id — resolves to engine + form schema via BROKER_PRESET_CATALOG. */
   presetId: z.string(),
+  /** Paper/demo-only automatic execution envelope. UTA re-verifies the
+   * preset mode at runtime before accepting an automated push. */
+  autoTrading: autoTradingPolicySchema.optional(),
   enabled: z.boolean().default(true),
   guards: z.array(guardConfigSchema).default([]),
   /** User-filled form values, validated against the preset's own zodSchema. */

@@ -3,6 +3,7 @@ import { Section } from '../form'
 import { Toggle } from '../Toggle'
 import { GuardsSection, CRYPTO_GUARD_TYPES, SECURITIES_GUARD_TYPES } from '../guards'
 import { ReconnectButton } from '../ReconnectButton'
+import { AutoTradingRiskSection } from './AutoTradingRiskSection'
 import { useSchemaForm } from '../../hooks/useSchemaForm'
 import type { UTAConfig, BrokerPreset, BrokerHealthInfo } from '../../api/types'
 import { displayNameForUTA } from '../../lib/uta-account-filter'
@@ -166,6 +167,11 @@ export function EditUTADialog({ uta, preset, health, onSave, onDelete, onViewInP
             </button>
           )}
         </Section>
+
+        <AutoTradingRiskSection
+          value={draft.autoTrading}
+          onChange={(autoTrading) => setDraft((current) => ({ ...current, autoTrading }))}
+        />
 
         {/* Guards */}
         <div>

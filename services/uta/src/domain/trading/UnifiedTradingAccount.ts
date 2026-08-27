@@ -34,6 +34,7 @@ import type {
   SyncResult,
 } from './git/types.js'
 import { createGuardPipeline, resolveGuards } from './guards/index.js'
+import { AutoTradingRiskController, type AutoTradingRiskPolicy } from './auto-trading-risk.js'
 import './contract-ext.js'
 
 // ==================== Options ====================
@@ -47,6 +48,9 @@ export interface UnifiedTradingAccountOptions {
   onPostReject?: (accountId: string) => void | Promise<void>
   /** Refuse external account mutations. Proposal staging stays local; push is blocked. Implied by keyless. */
   readOnly?: boolean
+  autoTrading?: AutoTradingRiskPolicy
+  automatedExecutionIsPaper?: boolean
+  isAutomationEmergencyStopped?: () => Promise<boolean>
   /** Public-data-only account (no key) — no account/positions; excluded from
    *  equity aggregation. Implies readOnly. */
   keyless?: boolean
@@ -89,6 +93,10 @@ export class UnifiedTradingAccount {
   /** External account mutations refused (implied by keyless). */
   readonly readOnly: boolean
   /** Broker-backed market-data discovery participation. */
+  private readonly _autoTrading?: AutoTradingRiskController
+  private readonly _automatedExecutionIsPaper: boolean
+  private readonly _isAutomationEmergencyStopped?: () => Promise<boolean>
+  private _automatedPushActive = false
   readonly asVendor: boolean
 
   private readonly _getState: () => Promise<GitState>
@@ -153,6 +161,12 @@ export class UnifiedTradingAccount {
     this._onPostPush = options.onPostPush
     this._onPostReject = options.onPostReject
     this.broker.setConnectionStateListener?.((event) => this._onBrokerConnectionState(event))
+    this._automatedExecutionIsPaper = options.automatedExecutionIsPaper === true
+    this._isAutomationEmergencyStopped = options.isAutomationEmergencyStopped
+    if (options.autoTrading?.enabled) {
+      this._autoTrading = new AutoTradingRiskController(this.id, broker, options.autoTrading)
+      this._autoTrading.load().catch(() => {})
+    }
 
     // Wire internals
     this._getState = async (): Promise<GitState> => {
@@ -179,6 +193,8 @@ export class UnifiedTradingAccount {
 
     const dispatcher = async (op: Operation): Promise<unknown> => {
       this._assertCanMutateAccount(op.action)
+      if (this._automatedPushActive) await this._autoTrading?.check(op)
+
       switch (op.action) {
         case 'placeOrder':
           return broker.placeOrder(op.contract, op.order, op.tpsl)
@@ -340,6 +356,7 @@ export class UnifiedTradingAccount {
     if (this._disabled) return
 
     this._currentReach = 'down'
+    void this._autoTrading?.pause(event.error ?? 'Broker connection lost; automatic trading paused.')
     this._consecutiveFailures = UnifiedTradingAccount.OFFLINE_THRESHOLD
     this._lastError = event.error ?? 'Broker transport reported a dead connection'
     this._lastFailureAt = new Date()
@@ -790,7 +807,22 @@ export class UnifiedTradingAccount {
     return ids.length ? `${message} [sub:${ids.join(',')}]` : message
   }
 
-  async push(expectedPendingHash: string): Promise<PushResult> {
+  automationRiskStatus() {
+    return this._autoTrading?.status() ?? { paused: false, consecutiveErrors: 0, ordersLastHour: 0, ordersToday: 0, day: new Date().toISOString().slice(0, 10) }
+  }
+
+  async resetAutomationRiskPause(): Promise<void> {
+    if (!this._autoTrading) throw new Error('Automatic trading is not configured for this account.')
+    await this._autoTrading.resetPause()
+  }
+
+  async push(expectedPendingHash: string, options: { automated?: boolean } = {}): Promise<PushResult> {
+    if (options.automated) {
+      if (!this._autoTrading) throw new Error('Automatic trading is not enabled for this account.')
+      if (!this._automatedExecutionIsPaper) throw new Error('Automatic trading is restricted to paper/demo accounts.')
+      if (await this._isAutomationEmergencyStopped?.()) throw new Error('Automatic trading is stopped by the global emergency stop.')
+      this._automatedPushActive = true
+    }
     this._assertCanMutateAccount('push')
     if (this._disabled) {
       throw new BrokerError('CONFIG', `Account "${this.label}" is disabled due to configuration error.`)
@@ -798,7 +830,12 @@ export class UnifiedTradingAccount {
     if (this.health === 'offline') {
       throw new Error(`Account "${this.label}" is offline. Cannot execute trades.`)
     }
-    const result = await this.git.push(expectedPendingHash)
+    let result: PushResult
+    try { result = await this.git.push(expectedPendingHash) }
+    finally { this._automatedPushActive = false }
+    if (options.automated && result.rejected.length > 0) {
+      await this._autoTrading?.recordFailure(new Error(result.rejected.map((item) => item.error ?? item.action).join('; ')))
+    }
     Promise.resolve(this._onPostPush?.(this.id)).catch(() => {})
     return result
   }

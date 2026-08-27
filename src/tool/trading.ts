@@ -799,7 +799,7 @@ ONLY if the operator has enabled "Allow AI to push trades" in Settings → Agent
             if (!status.pendingHash) {
               return { source: uta.id, error: 'Pending commit has no hash; refresh Trading as Git and approve there.' }
             }
-            return { source: uta.id, ...compactPushResult(await uta.push(status.pendingHash)) }
+            return { source: uta.id, ...compactPushResult(await uta.push(status.pendingHash, { automated: true })) }
           } catch (err) {
             return { source: uta.id, ...handleBrokerError(err) }
           }

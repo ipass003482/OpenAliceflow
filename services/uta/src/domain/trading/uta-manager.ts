@@ -10,7 +10,8 @@ import type { Contract, ContractDescription, ContractDetails } from '@traderalic
 import type { AccountCapabilities, BrokerHealth, BrokerHealthInfo } from './brokers/types.js'
 import { createCcxtProviderTools } from './brokers/ccxt/ccxt-tools.js'
 import { createBroker } from './brokers/factory.js'
-import { getBrokerPreset } from '@traderalice/uta-protocol'
+import { getBrokerPreset, isPaperPreset } from '@traderalice/uta-protocol'
+import { loadConfig } from '@/core/config.js'
 import { UnifiedTradingAccount } from './UnifiedTradingAccount.js'
 import { loadGitState, createGitPersister } from './git-persistence.js'
 import { readUTAsConfig, type UTAConfig } from '@/core/config.js'
@@ -67,6 +68,9 @@ export class UTAManager {
       keyless: cfg.keyless,
       readOnly: cfg.readOnly,
       asVendor: cfg.asVendor,
+      autoTrading: cfg.autoTrading,
+      automatedExecutionIsPaper: isPaperPreset(cfg.presetId, cfg.presetConfig),
+      isAutomationEmergencyStopped: async () => (await loadConfig()).trading.automationEmergencyStop === true,
       savedState,
       onCommit: createGitPersister(cfg.id),
       onHealthChange: (utaId, health) => {

@@ -209,6 +209,7 @@ function AiTradingToggle({
   const mode = useTradingMode((s) => s.status.mode)
   const enabled = config.agent?.allowAiTrading || false
 
+  const emergencyStopped = config.trading?.automationEmergencyStop === true
   const persist = useCallback(async (v: boolean) => {
     await api.config.updateSection('agent', { ...config.agent, allowAiTrading: v })
     setConfig((c) => (c ? { ...c, agent: { ...c.agent, allowAiTrading: v } } : c))
@@ -239,6 +240,24 @@ function AiTradingToggle({
       </div>
       {enabled && (
         <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive leading-relaxed">
+      <div className="mt-3 flex items-center justify-between gap-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <span className="text-[12px] font-medium text-destructive">Emergency stop automatic orders</span>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            Stops all AI-initiated executions immediately. Manual review remains available.
+          </p>
+        </div>
+        <Toggle
+          ariaLabel="Emergency stop automatic orders"
+          checked={emergencyStopped}
+          onChange={(v) => {
+            void api.config.updateSection('trading', { ...config.trading, automationEmergencyStop: v })
+              .then(() => setConfig((c) => c ? { ...c, trading: { ...c.trading, automationEmergencyStop: v } } : c))
+              .catch(() => {})
+          }}
+        />
+      </div>
+
           {t('settings.agent.allowAiTradingWarning')}
         </div>
       )}

@@ -527,7 +527,8 @@ export function createTradingRoutes(ctx: UTAEngineContext) {
           code: 'PENDING_HASH_REQUIRED',
         }, 409)
       }
-      const result = await uta.push(expectedPendingHash)
+      const automated = body && typeof body === 'object' && (body as { automated?: unknown }).automated === true
+      const result = await uta.push(expectedPendingHash, { automated })
       return c.json(result)
     } catch (err) {
       if (isPendingHashConflict(err)) {

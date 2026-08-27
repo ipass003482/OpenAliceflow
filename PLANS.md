@@ -29,6 +29,7 @@ the durable truth after it changes. Git history is the archive.
 
 ## Active
 
+- [[plans/auto-trading-risk-controls.md]] — Makes AI auto-approval paper-only and account-scoped, with mandatory notional/exposure/loss/rate/slippage/freshness/identity limits plus persistent emergency-stop and circuit-breaker controls.
 - [[plans/remote-project-fleet.md]] — Adds a machine-aware Supervisor fleet,
   remote AliceProject inventory/connection, and safe local-to-SSH project
   transfer for portable configuration and Workspaces while deliberately

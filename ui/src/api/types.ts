@@ -206,6 +206,7 @@ export interface AppConfig {
   trading: {
     mode?: TradingMode
     observeExternalOrdersEvery: string
+    automationEmergencyStop?: boolean
     keylessDataSources: Array<'binance' | 'okx' | 'bybit'>
   }
   snapshot: {
@@ -555,6 +556,18 @@ export interface UTAConfig {
   /** User-filled form values for the preset's schema. */
   presetConfig: Record<string, unknown>
   /** Whether broker-side account mutations are refused. */
+  autoTrading?: {
+    enabled: boolean
+    maxOrderNotional: number
+    maxSymbolExposurePercent: number
+    maxDailyLoss: number
+    maxOrdersPerHour: number
+    maxOrdersPerDay: number
+    maxSlippageBps: number
+    maxQuoteAgeMs: number
+    allowedAliceIds: string[]
+    pauseAfterConsecutiveErrors: number
+  }
   readOnly: boolean
   /** Whether this UTA participates in broker-backed market-data discovery. */
   asVendor: boolean

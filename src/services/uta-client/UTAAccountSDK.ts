@@ -271,11 +271,11 @@ export class UTAAccountSDK {
 
   // ==================== Write / lifecycle (existing routes) ====================
 
-  async push(expectedPendingHash: string): Promise<PushResult> {
+  async push(expectedPendingHash: string, options: { automated?: boolean } = {}): Promise<PushResult> {
     this.assertVenueWritable()
     return this.client.post<PushResult>(
       `/api/trading/uta/${encodeURIComponent(this.id)}/wallet/push`,
-      { expectedPendingHash },
+      { expectedPendingHash, ...(options.automated ? { automated: true } : {}) },
     )
   }
 
