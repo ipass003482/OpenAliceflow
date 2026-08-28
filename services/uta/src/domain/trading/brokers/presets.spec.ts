@@ -50,6 +50,7 @@ const SAMPLE_CONFIGS: Record<string, Record<string, unknown>> = {
   },
   'mock-simulator': { cash: 50000 },
   futu: { mode: 'simulate', trdMarket: 'HK', host: '127.0.0.1', port: 33333 },
+  'yuanta-uat': { account: 'S00000000000', password: 'test-password' },
 }
 
 // ==================== Catalog integrity ====================

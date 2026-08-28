@@ -48,6 +48,7 @@ const workspaceEntries: Record<InstallableBrokerEngine, string> = {
   leverup: 'packages/uta-broker-leverup/src/index.ts',
   longbridge: 'packages/uta-broker-longbridge/src/index.ts',
   futu: 'packages/uta-broker-futu/src/index.ts',
+  yuanta: 'packages/uta-broker-yuanta/src/index.ts',
 }
 
 const cache = new Map<BrokerEngine, Promise<BrokerEngineEntry>>()

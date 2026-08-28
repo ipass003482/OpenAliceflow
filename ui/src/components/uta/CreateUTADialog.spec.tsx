@@ -42,6 +42,15 @@ const brokerPreset: BrokerPreset = {
   },
 }
 
+const yuantaPreset: BrokerPreset = {
+  ...brokerPreset,
+  id: 'yuanta-uat',
+  label: 'Yuanta SPARK UAT (元大測試)',
+  defaultName: 'Yuanta SPARK UAT',
+  badge: '元',
+  engine: 'yuanta',
+}
+
 function setup(props: Partial<Parameters<typeof CreateUTADialog>[0]> = {}) {
   const onClose = vi.fn()
   const onSave = vi.fn()
@@ -109,6 +118,24 @@ describe('CreateUTADialog', () => {
     await waitFor(() => expect(installBrokerPack).toHaveBeenCalledWith('ccxt'))
     await waitFor(() => expect(screen.getByText('API key')).toBeTruthy())
     expect(onPackInstalled).toHaveBeenCalledWith(expect.objectContaining({ engine: 'ccxt', installed: true }))
+  })
+
+  it('requires explicit Yuanta license consent before downloading its runtime', async () => {
+    getBrokerPacks.mockResolvedValueOnce({
+      packs: [{ engine: 'yuanta', installed: false, source: 'missing', requiredBy: [] }],
+    })
+    setup({ presets: [yuantaPreset] })
+
+    await waitFor(() => expect(getBrokerPacks).toHaveBeenCalled())
+    fireEvent.click(screen.getByText('Yuanta SPARK UAT (元大測試)'))
+
+    const install = screen.getByRole('button', { name: 'Install Yuanta SPARK UAT (元大測試) support' })
+    expect(install.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('switch', { name: 'Accept Yuanta SPARK component license' }))
+    expect(install.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(install)
+
+    await waitFor(() => expect(installBrokerPack).toHaveBeenCalledWith('yuanta', { acceptVendorLicense: true }))
   })
 
   it('skips the install step when support is already available', async () => {

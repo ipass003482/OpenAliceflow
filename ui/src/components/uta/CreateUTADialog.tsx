@@ -55,6 +55,7 @@ export function CreateUTADialog({
   const [packStatuses, setPackStatuses] = useState<BrokerPackStatus[] | null>(null)
   const [packStatusError, setPackStatusError] = useState('')
   const [installingPack, setInstallingPack] = useState(false)
+  const [acceptVendorLicense, setAcceptVendorLicense] = useState(false)
 
   const preset = presets.find(p => p.id === presetId)
   const hasSensitive = preset?.schema && Object.values((preset.schema as { properties?: Record<string, { writeOnly?: boolean }> }).properties ?? {}).some(p => p.writeOnly)
@@ -119,6 +120,7 @@ export function CreateUTADialog({
     setReadOnly(initialReadOnly)
     setAsVendor(initialAsVendor)
     setError('')
+    setAcceptVendorLicense(false)
     const status = selected ? packStatuses?.find((row) => row.engine === selected.engine) : undefined
     setStep(status?.installed ? 'config' : 'install')
   }
@@ -128,7 +130,9 @@ export function CreateUTADialog({
     setInstallingPack(true)
     setError('')
     try {
-      const installed = await api.trading.installBrokerPack(preset.engine)
+      const installed = preset.engine === 'yuanta'
+        ? await api.trading.installBrokerPack(preset.engine, { acceptVendorLicense })
+        : await api.trading.installBrokerPack(preset.engine)
       setPackStatuses((rows) => [
         ...(rows ?? []).filter((row) => row.engine !== installed.engine),
         installed,
@@ -280,10 +284,12 @@ export function CreateUTADialog({
         )}
 
         {step === 'install' && preset && (
-          <BrokerPackInstallPanel
-            preset={preset}
-            status={packStatus}
-            error={error || packStatusError}
+            <BrokerPackInstallPanel
+              preset={preset}
+              status={packStatus}
+              error={error || packStatusError}
+              acceptVendorLicense={acceptVendorLicense}
+              onAcceptVendorLicense={setAcceptVendorLicense}
           />
         )}
 
@@ -310,7 +316,11 @@ export function CreateUTADialog({
             packStatuses === null ? (
               <span className="text-[11px] text-muted-foreground">Checking installed support…</span>
             ) : (
-              <button onClick={() => { void handleInstallPack() }} disabled={installingPack} className="btn-primary">
+                <button
+                  onClick={() => { void handleInstallPack() }}
+                  disabled={installingPack || (preset?.engine === 'yuanta' && !acceptVendorLicense)}
+                  className="btn-primary"
+                >
                 {installingPack ? 'Installing…' : packStatus?.source === 'broken' ? 'Repair support' : `Install ${preset?.label ?? 'broker'} support`}
               </button>
             )
@@ -363,10 +373,12 @@ function StepDots({ current }: { current: WizardStep }) {
   )
 }
 
-function BrokerPackInstallPanel({ preset, status, error }: {
+function BrokerPackInstallPanel({ preset, status, error, acceptVendorLicense, onAcceptVendorLicense }: {
   preset: BrokerPreset
   status?: BrokerPackStatus
   error: string
+  acceptVendorLicense: boolean
+  onAcceptVendorLicense: (accepted: boolean) => void
 }) {
   return (
     <div className="space-y-4">
@@ -386,6 +398,17 @@ function BrokerPackInstallPanel({ preset, status, error }: {
       <div className="rounded-md border border-border px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground">
         The downloaded pack is matched to this OpenAlice version and operating system, checksum-verified, then activated atomically. Your account credentials are requested only after installation.
       </div>
+      {preset.engine === 'yuanta' && (
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-warning/30 bg-warning/5 px-3 py-3">
+          <div className="min-w-0">
+            <div className="text-[12px] font-medium text-foreground">Yuanta SPARK component license</div>
+            <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              I accept Yuanta's component license and authorize OpenAlice to download the checksum-verified UAT runtime from Yuanta's official site. The vendor binaries are stored outside Git and can be reinstalled.
+            </div>
+          </div>
+          <Toggle ariaLabel="Accept Yuanta SPARK component license" size="sm" checked={acceptVendorLicense} onChange={onAcceptVendorLicense} />
+        </div>
+      )}
       {status?.reason && <p className="text-[12px] text-warning">{status.reason}</p>}
       {error && <p className="text-[12px] text-destructive">{error}</p>}
     </div>

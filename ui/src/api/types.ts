@@ -596,7 +596,7 @@ export interface BrokerPreset {
   defaultName: string
   badge: string
   badgeColor: string
-  engine: 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu' | 'mock'
+  engine: 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu' | 'yuanta' | 'mock'
   guardCategory: 'crypto' | 'securities'
   modes?: ModeOption[]
   subtitleFields: SubtitleField[]

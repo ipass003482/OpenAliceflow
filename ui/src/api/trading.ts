@@ -194,8 +194,15 @@ export const tradingApi = {
     return fetchJson('/api/trading/config/broker-packs')
   },
 
-  async installBrokerPack(engine: Exclude<BrokerEngine, 'mock'>): Promise<BrokerPackStatus> {
-    const res = await fetch(`/api/trading/config/broker-packs/${encodeURIComponent(engine)}/install`, { method: 'POST' })
+  async installBrokerPack(
+    engine: Exclude<BrokerEngine, 'mock'>,
+    options: { acceptVendorLicense?: boolean } = {},
+  ): Promise<BrokerPackStatus> {
+    const res = await fetch(`/api/trading/config/broker-packs/${encodeURIComponent(engine)}/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    })
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || `Failed to install ${engine} support (${res.status})`)
     return { ...body, requiredBy: body.requiredBy ?? [] }

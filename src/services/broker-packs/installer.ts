@@ -27,6 +27,7 @@ import {
 } from '../../core/broker-pack-catalog.js'
 import { getCurrentVersion } from '../../core/version.js'
 import { assertBrokerPackRequirements } from './requirements.js'
+import { installYuantaRuntime } from './yuanta-runtime.js'
 
 const DEFAULT_BASE_URL = 'https://download.openalice.ai'
 const MAX_PACK_BYTES = 512 * 1024 * 1024
@@ -73,7 +74,11 @@ export async function getBrokerPackLocalStatus(engine: InstallableBrokerEngine |
   return { engine, installed: false, source: 'missing' }
 }
 
-export async function installBrokerPack(engine: InstallableBrokerEngine): Promise<BrokerPackLocalStatus> {
+export async function installBrokerPack(
+  engine: InstallableBrokerEngine,
+  options: { acceptVendorLicense?: boolean } = {},
+): Promise<BrokerPackLocalStatus> {
+  if (engine === 'yuanta') await installYuantaRuntime(options.acceptVendorLicense === true)
   const engineRoot = brokerPackEngineRoot(engine)
   const lock = resolve(engineRoot, '.install.lock')
   await mkdir(engineRoot, { recursive: true })

@@ -15,7 +15,7 @@ import { createHash, randomBytes } from 'node:crypto'
 
 // ==================== Types ====================
 
-export type BrokerEngine = 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu' | 'mock'
+export type BrokerEngine = 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu' | 'yuanta' | 'mock'
 
 export interface ModeOption {
   id: string
@@ -476,6 +476,34 @@ export const FUTU_PRESET: BrokerPresetDef = {
   isPaper: (d) => d.mode === 'simulate',
 }
 
+export const YUANTA_UAT_PRESET: BrokerPresetDef = {
+  id: 'yuanta-uat',
+  label: 'Yuanta SPARK UAT (元大測試)',
+  description: 'Taiwan equities through Yuanta SPARK API testing environment. UAT only; production is unavailable.',
+  category: 'recommended',
+  hint: 'UAT only. Before connecting, ask your Yuanta representative to allowlist this computer\'s fixed public IP and import the official UAT certificate. OpenAlice downloads the official SPARK runtime only after vendor-license consent. This preset has no PROD switch.',
+  defaultName: 'yuanta-uat',
+  badge: '元大',
+  badgeColor: 'text-warning',
+  engine: 'yuanta',
+  guardCategory: 'securities',
+  modes: [{ id: 'uat', label: 'UAT / 測試環境' }],
+  zodSchema: z.object({
+    mode: z.literal('uat').default('uat').describe('Environment'),
+    account: z.string().regex(/^S\d{11}$/).default('S98875005091').describe('UAT securities account'),
+    password: z.string().min(1).describe('UAT password'),
+  }),
+  subtitleFields: [{ field: 'mode', prefix: 'Yuanta SPARK · ' }],
+  writeOnlyFields: ['password'],
+  fingerprintFields: ['mode', 'account'],
+  toEngineConfig: (d) => ({
+    environment: 'uat',
+    account: d.account,
+    password: d.password,
+  }),
+  isPaper: () => true,
+}
+
 // ==================== Other ecosystem brokers (lower-tier, isolated) ====================
 
 export const LEVERUP_PRESET: BrokerPresetDef = {
@@ -553,6 +581,7 @@ export const BROKER_PRESET_CATALOG: BrokerPresetDef[] = [
   ALPACA_PRESET,
   LONGBRIDGE_PRESET,
   FUTU_PRESET,
+  YUANTA_UAT_PRESET,
   HYPERLIQUID_PRESET,
   // ---- Crypto ----
   BINANCE_PRESET,

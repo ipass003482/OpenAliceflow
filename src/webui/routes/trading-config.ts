@@ -133,7 +133,12 @@ export function createTradingConfigRoutes(ctx: EngineContext) {
     const rawEngine = c.req.param('engine')
     if (!isInstallableBrokerEngine(rawEngine)) return c.json({ error: `Unknown broker pack: ${rawEngine}` }, 404)
     try {
-      const status = await installBrokerPack(rawEngine)
+      const body: { acceptVendorLicense?: boolean } = await c.req
+        .json<{ acceptVendorLicense?: boolean }>()
+        .catch(() => ({}))
+      const status = rawEngine === 'yuanta'
+        ? await installBrokerPack(rawEngine, { acceptVendorLicense: body.acceptVendorLicense === true })
+        : await installBrokerPack(rawEngine)
       notifyUTAReload()
       return c.json(status)
     } catch (err) {

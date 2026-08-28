@@ -134,7 +134,7 @@ describe('GET /broker-packs — optional engine requirements', () => {
     const { status, body } = await req(makeRoutes(), 'GET', '/broker-packs')
 
     expect(status).toBe(200)
-    expect((body as { packs: unknown[] }).packs).toHaveLength(6)
+    expect((body as { packs: unknown[] }).packs).toHaveLength(8)
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('legacy-account'),
       expect.stringMatching(/unknown broker preset/i),
@@ -159,6 +159,17 @@ describe('POST /broker-packs/:engine/install', () => {
     expect(body).toMatchObject({ engine: 'ccxt', installed: true, source: 'downloaded' })
     expect(brokerPackMocks.installBrokerPack).toHaveBeenCalledWith('ccxt')
     await vi.waitFor(() => expect(brokerPackMocks.triggerUTARestart).toHaveBeenCalledOnce())
+  })
+
+  it('forwards explicit vendor-license consent only for Yuanta', async () => {
+    const { status } = await req(makeRoutes(), 'POST', '/broker-packs/yuanta/install', {
+      acceptVendorLicense: true,
+    })
+
+    expect(status).toBe(200)
+    expect(brokerPackMocks.installBrokerPack).toHaveBeenCalledWith('yuanta', {
+      acceptVendorLicense: true,
+    })
   })
 
   it('returns an actionable install error without restarting UTA', async () => {

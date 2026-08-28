@@ -29,6 +29,10 @@ the durable truth after it changes. Git history is the archive.
 
 ## Active
 
+- [[plans/uta-broker-yuanta.md]] — Adds a portable, UAT-only Yuanta SPARK
+  Broker Pack for Taiwan equities. OpenAlice owns the Bridge and installer;
+  vendor binaries are fetched from Yuanta after explicit license consent, and
+  PROD remains structurally unavailable in the first release.
 - [[plans/auto-trading-risk-controls.md]] — Makes AI auto-approval paper-only and account-scoped, with mandatory notional/exposure/loss/rate/slippage/freshness/identity limits plus persistent emergency-stop and circuit-breaker controls.
 - [[plans/remote-project-fleet.md]] — Adds a machine-aware Supervisor fleet,
   remote AliceProject inventory/connection, and safe local-to-SSH project

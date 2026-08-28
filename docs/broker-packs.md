@@ -8,8 +8,9 @@ market-data source selection; those remain in [[docs/uta-live-testing.md]] and
 ## Boundary
 
 The installed OpenAlice core contains Alice, UTA Core, and the Mock simulator.
-It does not contain the live broker SDKs for CCXT, Alpaca, IBKR, LeverUp, or
-Longbridge. Those implementations ship as versioned, platform-specific Broker
+It does not contain the live broker SDKs for CCXT, Alpaca, IBKR, LeverUp,
+Longbridge, Futu, or Yuanta. Those implementations ship as versioned,
+platform-specific Broker
 Packs and are installed only after the user chooses a broker or public crypto
 data source in the Trading UI.
 
@@ -35,7 +36,7 @@ Pack API version 1 exports:
 
 ```ts
 BROKER_PACK_API_VERSION: 1
-BROKER_ENGINE: 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu'
+BROKER_ENGINE: 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'futu' | 'yuanta'
 configSchema: ZodType
 createBroker(config): IBroker
 ```
@@ -99,6 +100,15 @@ the pointer; it does not overwrite files that a Windows UTA process may still
 have open. Pack directories are replaceable machine/runtime state: backup
 `data/`, credentials, and Workspaces, then reinstall Packs after moving to an
 incompatible machine.
+
+Yuanta is a two-part Pack. The OpenAlice-owned Pack contains its TypeScript
+adapter and .NET 8 Bridge, while the vendor SPARK component is downloaded from
+Yuanta's pinned official URL only after explicit license consent. Alice verifies
+the byte size and SHA-256, extracts it under
+`<OPENALICE_HOME>/runtime/vendor/yuanta-spark/releases/`, and atomically updates
+its own active pointer. Vendor DLLs, UAT certificates, and credentials never
+belong in Git or the Broker Pack archive. The initial preset and Bridge are
+UAT-only and reject any production environment value.
 
 On production startup Alice reconciles only Packs that already have an active
 downloaded release. A Pack produced by another OpenAlice version continues
