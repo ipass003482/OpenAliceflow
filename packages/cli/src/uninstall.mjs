@@ -4,10 +4,13 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 
 import { resolveInstalledLayout } from './install-layout.mjs'
+import { readInstallSource } from './install-source.mjs'
+import { packageManagerUninstallMessage } from './package-manager.mjs'
 
 const BEGIN_MARKER = '# >>> OpenAlice CLI >>>'
 const END_MARKER = '# <<< OpenAlice CLI <<<'
-const LAUNCHERS = ['openalice', 'openalice.cmd', 'pi', 'pi.cmd']
+const NATIVE_LAUNCHERS = ['openalice', 'alice', 'alice-workspace', 'alice-uta', 'traderhub']
+const LEGACY_LAUNCHERS = ['openalice', 'openalice.cmd', 'pi', 'pi.cmd']
 
 export function parseUninstallArgs(argv) {
   const options = { planOnly: false, yes: false }
@@ -23,10 +26,25 @@ export async function runUninstallCommand(argv, dependencies = {}) {
   const options = parseUninstallArgs(argv)
   const stdout = dependencies.stdout ?? process.stdout
   const stdin = dependencies.stdin ?? process.stdin
+  const env = dependencies.env ?? process.env
+  if (env['OPENALICE_SERVICE_MANAGER']?.trim() === 'railway') {
+    stdout.write('Railway owns this OpenAlice installation and its retained fallback releases. Remove or reconfigure the Railway service instead of uninstalling from SSH.\n')
+    stdout.write('OpenAlice did not modify the persistent install root.\n')
+    return 0
+  }
   const layout = Object.hasOwn(dependencies, 'layout')
     ? dependencies.layout
-    : resolveInstalledLayout(import.meta.url)
+    : resolveInstalledLayout(import.meta.url, { env })
   if (!layout) {
+    const installSource = await (
+      dependencies.readInstallSourceImpl ?? readInstallSource
+    )({ env })
+    const managerMessage = packageManagerUninstallMessage(installSource)
+    if (managerMessage) {
+      stdout.write(`${managerMessage}\n`)
+      stdout.write('OpenAlice did not modify the package manager\'s files or user data.\n')
+      return 0
+    }
     throw new Error('This OpenAlice CLI is running from source, not an installed release.')
   }
 
@@ -54,7 +72,7 @@ export async function runUninstallCommand(argv, dependencies = {}) {
     profiles,
     processKill: dependencies.processKill,
   })
-  stdout.write('\nOpenAlice CLI, managed Pi, and installed Runtime were removed.\n')
+  stdout.write('\nOpenAlice CLI releases and installer-owned launchers were removed.\n')
   stdout.write(`Preserved application data and user work under ${layout.installRoot}.\n`)
   if (result.profilesChanged.length > 0) {
     stdout.write(`Removed managed PATH configuration from: ${result.profilesChanged.join(', ')}\n`)
@@ -71,12 +89,13 @@ export async function performUninstall(layout, options = {}) {
     if (await removeManagedPathBlock(profile, layout.binDir)) profilesChanged.push(profile)
   }
 
-  for (const launcher of LAUNCHERS) {
+  const launchers = layout.kind === 'bun' ? NATIVE_LAUNCHERS : LEGACY_LAUNCHERS
+  for (const launcher of launchers) {
     await rm(join(layout.binDir, launcher), { force: true })
   }
   await rm(layout.updateCachePath, { force: true })
   await rm(layout.lockDir, { recursive: true, force: true })
-  await rm(layout.versionsDir, { recursive: true, force: true })
+  await rm(layout.cliDir ?? layout.versionsDir, { recursive: true, force: true })
   try {
     await rmdir(layout.binDir)
   } catch (error) {
@@ -141,10 +160,11 @@ export function formatUninstallHelp() {
   openalice uninstall --plan
   openalice uninstall [--yes]
 
-Removes the installed OpenAlice CLI, managed Pi, installed Runtime, immutable
-release directories, and matching managed PATH blocks. It preserves OpenAlice
-data, Workspaces, source checkouts, credentials, keys, and the shared install
-root.
+Removes the native OpenAlice CLI releases, installer-owned launchers,
+provenance, update cache, and matching managed PATH blocks. It preserves
+OpenAlice data, Workspaces, source checkouts, credentials, keys, Agent Runtimes,
+and the shared install root. Package-manager installations instead report the
+owning manager's exact uninstall command and do not remove its files directly.
 
 Options:
   --plan     Show exact ownership boundaries without changing files
@@ -154,12 +174,13 @@ Options:
 }
 
 function printUninstallPlan(stdout, layout, profiles) {
+  const releaseRoot = layout.cliDir ?? layout.versionsDir
+  const launchers = layout.kind === 'bun' ? NATIVE_LAUNCHERS : LEGACY_LAUNCHERS
   stdout.write(`OpenAlice CLI uninstall plan
 
 Remove:
-  ${join(layout.binDir, 'openalice')} and .cmd launcher
-  ${join(layout.binDir, 'pi')} and .cmd launcher
-  ${layout.versionsDir}
+  ${launchers.map((launcher) => join(layout.binDir, launcher)).join('\n  ')}
+  ${releaseRoot}
   ${layout.updateCachePath}
   matching managed PATH blocks in ${profiles.join(', ')}
 
@@ -169,6 +190,7 @@ Preserve:
   ${join(layout.installRoot, 'sources')}
   ${join(layout.installRoot, 'provider-keys.json')}
   ${join(layout.installRoot, 'sealing.key')}
+  Agent Runtime executables and their native configuration
   ${layout.installRoot}
 `)
 }

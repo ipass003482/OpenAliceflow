@@ -1,6 +1,13 @@
 import { spawn } from 'node:child_process'
+import { fstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { mkdir, open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+
+import {
+  reconcileActivation,
+  resolveActivationContext,
+  rollbackFailedActivation,
+} from './activation-runtime.mjs'
 
 import {
   buildLocalRuntimeEnv,
@@ -17,15 +24,24 @@ import {
   resolveOpenAliceHome,
   stopRuntimeServer,
 } from './server-control.mjs'
+import {
+  buildBunRuntimeEnvironment,
+  buildExternalAgentRuntimeEnvironment,
+  bunGuardianProcessSpec,
+  isBunStandalone,
+  resolveBunResourceRoot,
+} from './bun-standalone.mjs'
 
 const NULL_OUTPUT = Object.freeze({ write: () => undefined })
 
 export async function inspectRuntime(options = {}, dependencies = {}) {
   const readStatus = dependencies.readStatus ?? readRuntimeStatus
-  return readStatus({
+  const status = await readStatus({
     homeRoot: options.homeRoot,
     timeoutMs: options.waitMs,
   }, dependencies)
+  const activation = await resolveActivationContext(dependencies.env ?? process.env, dependencies)
+  return reconcileActivation(status, activation, dependencies, { confirm: false })
 }
 
 export async function startRuntime(options, dependencies = {}) {
@@ -37,9 +53,29 @@ export async function startRuntime(options, dependencies = {}) {
     homeDir: dependencies.homeDir,
   })
   const readStatus = dependencies.readStatus ?? readRuntimeStatus
+  const activation = await resolveActivationContext(env, dependencies)
+  const railwayFenceFd = (dependencies.resolveRailwayFenceFd ?? resolveRailwayFenceFd)(env, homeRoot)
+  const railwayFenceClaimed = Boolean(
+    env['OPENALICE_RAILWAY_ENTRYPOINT_OWNER']
+    || env['OPENALICE_RAILWAY_FENCE_FD']
+    || env['OPENALICE_SERVICE_MANAGER']?.trim() === 'railway',
+  )
+  if (railwayFenceClaimed && railwayFenceFd === null) {
+    throw lifecycleError(
+      'ERAILWAYFENCE',
+      'Railway may start the Runtime only through its image entrypoint with the locked Volume capability',
+    )
+  }
   let status = await readStatus({ homeRoot, timeoutMs: 1_000 }, dependencies)
+  if (railwayFenceFd !== null && status.class !== 'absent') {
+    throw lifecycleError(
+      'ERAILWAYCUTOVER',
+      `The Railway Volume fence is held, but retained Runtime ownership at ${homeRoot} is not eligible for automatic handoff. Verify the previous deployment is stopped, then quarantine only state/guardian.lock, state/runtime.lock, workspaces/state/runtime.lock, and data/state/config-bootstrap.lock from this exact Project Home; do not clear the Project or Volume.`,
+    )
+  }
 
   if (status.owner?.surface === 'cli-server' && status.class === 'running') {
+    status = await reconcileActivation(status, activation, dependencies)
     return {
       outcome: 'already-running',
       mode: status.owner.mode ?? (detached ? 'detached' : 'foreground'),
@@ -54,6 +90,7 @@ export async function startRuntime(options, dependencies = {}) {
       ...dependencies,
       readStatus,
     })
+    status = await reconcileActivation(status, activation, dependencies)
     return {
       outcome: 'already-running',
       mode: status.owner?.mode ?? (detached ? 'detached' : 'foreground'),
@@ -67,32 +104,55 @@ export async function startRuntime(options, dependencies = {}) {
     throw lifecycleError('EOWNED', formatOwnershipRefusal(status))
   }
 
+  const standalone = isBunStandalone()
+  const launchEnv = standalone
+    ? buildExternalAgentRuntimeEnvironment(env)
+    : env
   const requestedAppDir = options.appDir
     ?? env['OPENALICE_APP_HOME']?.trim()
     ?? env['OPENALICE_MANAGED_RUNTIME_PATH']?.trim()
     ?? dependencies.cwd
     ?? process.cwd()
   const resolveRoot = dependencies.resolveRoot ?? findOpenAliceRoot
-  const appDir = await resolveRoot(requestedAppDir)
-  const runtimeProvider = resolveRuntimeProvider(options.runtimeProvider, appDir, env)
+  const appDir = standalone
+    ? resolveBunResourceRoot(env, dependencies.runtimeExecutable ?? process.execPath)
+    : await resolveRoot(requestedAppDir)
+  const runtimeProvider = resolveRuntimeProvider(
+    options.runtimeProvider,
+    appDir,
+    env,
+    activation.contentIdentity,
+  )
   const prepareSource = dependencies.prepareSource ?? prepareSourceCheckout
   emit({ type: 'preparing', appDir, homeRoot })
-  await prepareSource(appDir, options, {
-    stdout: dependencies.progressOutput ?? NULL_OUTPUT,
-    env,
-  })
+  if (!standalone) {
+    await prepareSource(appDir, options, {
+      stdout: dependencies.progressOutput ?? NULL_OUTPUT,
+      env,
+    })
+  }
 
   const nodeBinary = dependencies.nodeBinary ?? process.execPath
-  const runtimeEnv = buildLocalRuntimeEnv(env, {
+  let runtimeEnv = buildLocalRuntimeEnv(launchEnv, {
     appDir,
     homeRoot,
     nodeBinary,
     port: options.port,
     takeover: options.takeover,
   })
+  delete runtimeEnv.OPENALICE_RAILWAY_ENTRYPOINT_OWNER
+  delete runtimeEnv.OPENALICE_RAILWAY_FENCE_FD
+  if (railwayFenceFd !== null) runtimeEnv.OPENALICE_RAILWAY_FENCE_FD = '3'
   runtimeEnv.OPENALICE_LAUNCHER = 'cli-server'
   runtimeEnv.OPENALICE_SERVER_MODE = detached ? 'detached' : 'foreground'
   runtimeEnv.OPENALICE_RUNTIME_PROVIDER = runtimeProvider.kind
+  if (standalone) {
+    runtimeEnv = buildBunRuntimeEnvironment(
+      runtimeEnv,
+      appDir,
+      dependencies.runtimeExecutable ?? process.execPath,
+    )
+  }
   delete runtimeEnv.OPENALICE_RUNTIME_CONTENT_IDENTITY
   if (runtimeProvider.contentIdentity) {
     runtimeEnv.OPENALICE_RUNTIME_CONTENT_IDENTITY = runtimeProvider.contentIdentity
@@ -101,6 +161,9 @@ export async function startRuntime(options, dependencies = {}) {
   const logPath = resolve(options.logFile ?? resolve(homeRoot, 'logs', 'server.log'))
   runtimeEnv.OPENALICE_SERVER_LOG = logPath
   const spawnProcess = dependencies.spawnProcess ?? spawn
+  const guardianSpec = standalone
+    ? bunGuardianProcessSpec(dependencies.runtimeExecutable ?? process.execPath)
+    : { cmd: nodeBinary, args: ['scripts/guardian/prod.mjs'] }
   let runtime
   if (detached) {
     const makeDir = dependencies.mkdirImpl ?? mkdir
@@ -108,11 +171,13 @@ export async function startRuntime(options, dependencies = {}) {
     await makeDir(dirname(logPath), { recursive: true })
     const logHandle = await openFile(logPath, 'a', 0o600)
     try {
-      runtime = spawnProcess(nodeBinary, ['scripts/guardian/prod.mjs'], {
+      runtime = spawnProcess(guardianSpec.cmd, guardianSpec.args, {
         cwd: appDir,
         env: runtimeEnv,
         detached: true,
-        stdio: ['ignore', logHandle.fd, logHandle.fd],
+        stdio: railwayFenceFd === null
+          ? ['ignore', logHandle.fd, logHandle.fd]
+          : ['ignore', logHandle.fd, logHandle.fd, railwayFenceFd],
         windowsHide: true,
       })
       runtime.unref()
@@ -120,17 +185,20 @@ export async function startRuntime(options, dependencies = {}) {
       await logHandle.close()
     }
   } else {
-    runtime = spawnProcess(nodeBinary, ['scripts/guardian/prod.mjs'], {
+    runtime = spawnProcess(guardianSpec.cmd, guardianSpec.args, {
       cwd: appDir,
       env: runtimeEnv,
-      stdio: 'inherit',
+      stdio: railwayFenceFd === null
+        ? 'inherit'
+        : ['inherit', 'inherit', 'inherit', railwayFenceFd],
       windowsHide: true,
     })
   }
 
   let ready = false
   const readinessAbort = new AbortController()
-  const startupSignals = createStartupSignalGuard(runtime, 'OpenAlice Runtime start')
+  const signalSource = dependencies.signalSource ?? process
+  const startupSignals = createStartupSignalGuard(runtime, 'OpenAlice Runtime start', { signalSource })
   const earlyFailure = new Promise((_, reject) => {
     runtime.once('error', reject)
     const rejectExit = (code, signal) => {
@@ -164,6 +232,7 @@ export async function startRuntime(options, dependencies = {}) {
       startupSignals.promise,
     ])
     ready = true
+    status = await reconcileActivation(status, activation, dependencies)
     const launch = {
       outcome: 'started',
       mode: detached ? 'detached' : 'foreground',
@@ -172,11 +241,17 @@ export async function startRuntime(options, dependencies = {}) {
       logPath: detached ? logPath : null,
       status,
     }
-    startupSignals.release()
+    if (detached) {
+      startupSignals.release()
+      emit({ type: 'ready', result: launch })
+      return launch
+    }
+    const runtimeExit = holdRuntime(runtime, {
+      signalSource,
+      releaseStartupSignals: startupSignals.release,
+    })
     emit({ type: 'ready', result: launch })
-
-    if (detached) return launch
-    const exitCode = await holdRuntime(runtime)
+    const exitCode = await runtimeExit
     return {
       ...launch,
       outcome: 'exited',
@@ -186,20 +261,46 @@ export async function startRuntime(options, dependencies = {}) {
     readinessAbort.abort()
     startupSignals.release()
     runtime.kill('SIGTERM')
+    const rollback = await rollbackFailedActivation(activation, error, dependencies)
+    const rollbackMessage = rollback
+      ? ` The failed direct-install activation was rolled back to ${rollback.restoredRelease}. Run openalice again to start the restored release. User data was not changed.`
+      : ''
     if (detached) {
       const wrapped = lifecycleError(
         error?.code ?? 'ESTART',
-        `${error instanceof Error ? error.message : String(error)}. See the Runtime log at ${logPath}`,
+        `${error instanceof Error ? error.message : String(error)}.${rollbackMessage} See the Runtime log at ${logPath}`,
       )
       wrapped.cause = error
       wrapped.logPath = logPath
+      if (rollback) wrapped.rollback = rollback
+      throw wrapped
+    }
+    if (rollback) {
+      const wrapped = lifecycleError(
+        error?.code ?? 'ESTART',
+        `${error instanceof Error ? error.message : String(error)}.${rollbackMessage}`,
+      )
+      wrapped.cause = error
+      wrapped.rollback = rollback
       throw wrapped
     }
     throw error
   }
 }
 
-function resolveRuntimeProvider(explicit, appDir, env) {
+function resolveRuntimeProvider(explicit, appDir, env, installedIdentity = null) {
+  if (explicit?.kind === 'bun' || isBunStandalone()) {
+    const explicitIdentity = typeof explicit?.contentIdentity === 'string'
+      ? explicit.contentIdentity.trim()
+      : explicit?.contentIdentity
+    return {
+      kind: 'bun',
+      contentIdentity: explicitIdentity
+        || env['OPENALICE_RUNTIME_CONTENT_IDENTITY']?.trim()
+        || installedIdentity
+        || null,
+    }
+  }
   if (explicit?.kind === 'bundle') {
     return {
       kind: 'bundle',
@@ -322,6 +423,92 @@ async function waitForRuntimeReady(homeRoot, timeoutMs, dependencies) {
   )
 }
 
+function resolveRailwayFenceFd(env, homeRoot) {
+  const serviceId = env['RAILWAY_SERVICE_ID']?.trim()
+  const rawFd = env['OPENALICE_RAILWAY_FENCE_FD']?.trim()
+  const fd = Number(rawFd)
+  if (
+    env['OPENALICE_RAILWAY_ENTRYPOINT_OWNER'] !== '1'
+    || env['OPENALICE_SERVICE_MANAGER']?.trim() !== 'railway'
+    || !env['RAILWAY_ENVIRONMENT_ID']?.trim()
+    || !/^[A-Za-z0-9-]{1,128}$/.test(serviceId ?? '')
+    || env['OPENALICE_MACHINE_ID']?.trim() !== `railway-service-${serviceId}`
+    || !/^[0-9]{1,4}$/.test(rawFd ?? '')
+    || !Number.isInteger(fd)
+    || fd < 3
+  ) return null
+  const fencePath = railwayRuntimeFencePath(env, homeRoot)
+  if (!fencePath) return null
+  try {
+    const inherited = fstatSync(fd)
+    const expected = statSync(fencePath)
+    return inherited.isDirectory()
+      && expected.isDirectory()
+      && inherited.dev === expected.dev
+      && inherited.ino === expected.ino
+      && inheritedFdHoldsExclusiveFlock(fd)
+      ? fd
+      : null
+  } catch {
+    return null
+  }
+}
+
+function railwayRuntimeFencePath(env, homeRoot) {
+  const serviceId = env['RAILWAY_SERVICE_ID']?.trim()
+  if (!/^[A-Za-z0-9-]{1,128}$/.test(serviceId ?? '')) return null
+  const configuredRoots = [
+    env['RAILWAY_VOLUME_MOUNT_PATH']?.trim(),
+    env['OPENALICE_RAILWAY_VOLUME_ROOT']?.trim(),
+  ].filter(Boolean).map((value) => resolve(value))
+  if (configuredRoots.length === 0 || new Set(configuredRoots).size !== 1) return null
+  const volumeRoot = configuredRoots[0]
+  const installDir = env['OPENALICE_INSTALL_DIR']?.trim()
+  if (!volumeRoot || volumeRoot === '/' || !homeRoot || !installDir) return null
+  if (!pathIsWithin(volumeRoot, homeRoot) || !pathIsWithin(volumeRoot, installDir)) return null
+  return isLinuxMountPoint(volumeRoot) ? volumeRoot : null
+}
+
+function pathIsWithin(root, candidate) {
+  try {
+    const canonicalRoot = realpathSync(root)
+    const canonicalCandidate = realpathSync(candidate)
+    return canonicalCandidate !== canonicalRoot
+      && canonicalCandidate.startsWith(`${canonicalRoot}/`)
+  } catch {
+    return false
+  }
+}
+
+function isLinuxMountPoint(path) {
+  if (process.platform !== 'linux') return false
+  try {
+    const canonical = realpathSync(path)
+    return readFileSync('/proc/self/mountinfo', 'utf8')
+      .split('\n')
+      .some((line) => decodeMountInfoPath(line.split(' ')[4] ?? '') === canonical)
+  } catch {
+    return false
+  }
+}
+
+function decodeMountInfoPath(value) {
+  return value.replace(/\\([0-7]{3})/g, (_match, octal) => (
+    String.fromCharCode(Number.parseInt(octal, 8))
+  ))
+}
+
+function inheritedFdHoldsExclusiveFlock(fd) {
+  if (process.platform !== 'linux') return false
+  try {
+    return /^lock:\s+\d+:\s+FLOCK\s+ADVISORY\s+WRITE\b/m.test(
+      readFileSync(`/proc/self/fdinfo/${fd}`, 'utf8'),
+    )
+  } catch {
+    return false
+  }
+}
+
 async function sleepOrAbort(ms, sleep, signal) {
   if (!signal) {
     await sleep(ms)
@@ -361,25 +548,45 @@ function isLoopbackWebUrl(value) {
   }
 }
 
-function holdRuntime(runtime) {
+function holdRuntime(runtime, options = {}) {
+  const signalSource = options.signalSource ?? process
+  const releaseStartupSignals = options.releaseStartupSignals ?? (() => undefined)
+  const exitCodeFor = (code, signal, requestedStop) => (
+    requestedStop ? 0 : code ?? (signal ? 1 : 0)
+  )
   if (runtime.exitCode !== undefined && (
     runtime.exitCode !== null
     || (runtime.signalCode !== undefined && runtime.signalCode !== null)
   )) {
-    return Promise.resolve(runtime.exitCode ?? 0)
+    releaseStartupSignals()
+    return Promise.resolve(exitCodeFor(runtime.exitCode, runtime.signalCode, false))
   }
   return new Promise((resolvePromise) => {
     let requestedStop = false
+    let settled = false
+    const cleanup = () => {
+      signalSource.off('SIGINT', stop)
+      signalSource.off('SIGTERM', stop)
+      runtime.off('exit', onExit)
+    }
+    const onExit = (code, signal) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolvePromise(exitCodeFor(code, signal, requestedStop))
+    }
     const stop = () => {
+      if (requestedStop) return
       requestedStop = true
       runtime.kill('SIGTERM')
     }
-    process.once('SIGINT', stop)
-    process.once('SIGTERM', stop)
-    runtime.once('exit', (code) => {
-      process.off('SIGINT', stop)
-      process.off('SIGTERM', stop)
-      resolvePromise(requestedStop ? 0 : code ?? 0)
-    })
+    runtime.once('exit', onExit)
+    signalSource.once('SIGINT', stop)
+    signalSource.once('SIGTERM', stop)
+    releaseStartupSignals()
+    if (runtime.exitCode !== undefined && (
+      runtime.exitCode !== null
+      || (runtime.signalCode !== undefined && runtime.signalCode !== null)
+    )) onExit(runtime.exitCode, runtime.signalCode)
   })
 }

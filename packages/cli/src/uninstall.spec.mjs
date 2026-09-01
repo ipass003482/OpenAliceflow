@@ -86,6 +86,38 @@ after
     await expect(access(layout.versionsDir)).resolves.toBeUndefined()
   })
 
+  it('preserves fallback releases when Railway owns the install root', async () => {
+    const root = await makeTempDir()
+    const layout = await makeInstalledLayout(root)
+    const output = []
+
+    await expect(runUninstallCommand(['--yes'], {
+      layout,
+      env: { OPENALICE_SERVICE_MANAGER: 'railway' },
+      profiles: [],
+      stdout: { write: (value) => output.push(value) },
+      stdin: { isTTY: false },
+    })).resolves.toBe(0)
+
+    await expect(access(layout.versionsDir)).resolves.toBeUndefined()
+    expect(output.join('')).toContain('retained fallback releases')
+    expect(output.join('')).toContain('did not modify')
+  })
+
+  it('routes package-managed removal back to the owning manager', async () => {
+    const output = []
+    await expect(runUninstallCommand(['--yes'], {
+      layout: null,
+      readInstallSourceImpl: async () => ({
+        schemaVersion: 3,
+        method: 'aur',
+      }),
+      stdout: { write: (value) => output.push(value) },
+    })).resolves.toBe(0)
+    expect(output.join('')).toContain('paru -Rns openalice-bin')
+    expect(output.join('')).toContain('did not modify')
+  })
+
   it('refuses to race a live installer', async () => {
     const root = await makeTempDir()
     const layout = await makeInstalledLayout(root)

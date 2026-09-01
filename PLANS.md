@@ -34,6 +34,17 @@ the durable truth after it changes. Git history is the archive.
   vendor binaries are fetched from Yuanta after explicit license consent, and
   PROD remains structurally unavailable in the first release.
 - [[plans/auto-trading-risk-controls.md]] — Makes AI auto-approval paper-only and account-scoped, with mandatory notional/exposure/loss/rate/slippage/freshness/identity limits plus persistent emergency-stop and circuit-breaker controls.
+- [[plans/bun-cli-distribution.md]] — Replaces the expanded Node headless
+  Runtime with a Bun-compiled, multi-process CLI distribution. Direct,
+  npm/Bun, Homebrew, and AUR channels consume one accepted artifact set. The
+  CLI package owns OpenAlice only: Agent Runtime installation and Electron
+  packaging stay outside this plan. The native CLI is public through the
+  separately dispatched `v0.91.0-beta.1`; stable/beta discovery now uses the
+  OpenAlice CDN manifests. The retained no-domain Railway profile has passed
+  real migration, OpenCode resume, normal restart, and hard-kill recovery;
+  disposable empty-Volume/failure fallback, native PowerShell, and external
+  package-manager activation remain open on focused branches from current
+  `dev`.
 - [[plans/remote-project-fleet.md]] — Adds a machine-aware Supervisor fleet,
   remote AliceProject inventory/connection, and safe local-to-SSH project
   transfer for portable configuration and Workspaces while deliberately

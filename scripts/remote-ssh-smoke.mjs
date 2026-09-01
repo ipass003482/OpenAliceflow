@@ -29,7 +29,7 @@ if (args.includes('--help') || args.includes('-h')) {
 Builds a clean local SSH host, serves the real OpenAlice installer inside that
 host, and exercises plan, install, detached Server start, browser tunnel,
 disconnect persistence, reconnect, structured stop, and absent status. This is
-a local acceptance gate and is not wired into PR CI.
+the clean Linux acceptance gate used by the CLI installer workflow.
 
 Options:
   --keep-image      Preserve the temporary Docker image
@@ -97,18 +97,18 @@ try {
   await chmod(sshWrapper, 0o700)
 
   const remoteTarget = 'openalice-remote-smoke'
-  const smokeEnv = {
+  let smokeEnv = {
     ...process.env,
     HOME: localHome,
     PATH: `${fixtureBin}:${process.env.PATH ?? ''}`,
     OPENALICE_REMOTE_SMOKE_SSH_CONFIG: join(sshDir, 'config'),
-    OPENALICE_REMOTE_TEST_INSTALL_URL: 'http://127.0.0.1:18080/install',
-    OPENALICE_REMOTE_TEST_INSTALL_SELECTOR_KIND: 'version',
-    OPENALICE_REMOTE_TEST_INSTALL_SELECTOR_VALUE: 'remote-smoke',
-    OPENALICE_REMOTE_TEST_INSTALL_BASE_URL: 'http://127.0.0.1:18080/packages/cli/',
-    OPENALICE_REMOTE_TEST_REPOSITORY_URL: 'file:///fixture/OpenAlice',
+    OPENALICE_REMOTE_TEST_INSTALL_BASE_URL: 'http://127.0.0.1:18080',
   }
   await waitForSsh(remoteTarget, smokeEnv)
+  smokeEnv = {
+    ...smokeEnv,
+    ...await prepareLocalDevIdentityFixture(container, scratch),
+  }
 
   console.log('[remote-ssh-smoke] checking read-only missing-host plan')
   const initialPlan = run(process.execPath, [
@@ -116,9 +116,8 @@ try {
     '--plan', '--no-open',
   ], { cwd: repoRoot, env: smokeEnv })
   requireText(initialPlan, 'install remote OpenAlice CLI')
-  requireText(initialPlan, 'install managed Pi 0.83.0')
-  requireText(initialPlan, 'clone OpenAlice source (version remote-smoke)')
   requireText(initialPlan, 'start remote OpenAlice Server')
+  requireText(initialPlan, 'installed-native')
   run('ssh', [remoteTarget, 'test ! -x "$HOME/.openalice/bin/openalice"'], { env: smokeEnv })
 
   console.log('[remote-ssh-smoke] applying install/start and opening first tunnel')
@@ -129,14 +128,13 @@ try {
   if (running.class !== 'running' || running.owner?.surface !== 'cli-server') {
     throw new Error(`Remote Server did not survive tunnel disconnect: ${JSON.stringify(running)}`)
   }
-  const piVersion = run('ssh', [remoteTarget, '"$HOME/.openalice/bin/pi" --version'], { env: smokeEnv }).trim()
-  if (piVersion !== '0.83.0') throw new Error(`Remote managed Pi version mismatch: ${piVersion}`)
+  run('ssh', [remoteTarget, 'test ! -e "$HOME/.openalice/bin/pi"'], { env: smokeEnv })
   const launchRoot = running.owner?.launchRoot
-  if (typeof launchRoot !== 'string' || !launchRoot.includes('/.openalice/cli-versions/')) {
+  if (typeof launchRoot !== 'string' || !launchRoot.includes('/.openalice/cli/releases/')) {
     throw new Error(`Remote Server did not use an installed Runtime: ${JSON.stringify(launchRoot)}`)
   }
-  if (running.provider?.kind !== 'bundle') {
-    throw new Error(`Remote Server did not report the bundle provider: ${JSON.stringify(running.provider)}`)
+  if (running.provider?.kind !== 'bun') {
+    throw new Error(`Remote Server did not report the Bun provider: ${JSON.stringify(running.provider)}`)
   }
 
   console.log('[remote-ssh-smoke] registering the host and reading aggregate AliceProject inventory')
@@ -159,15 +157,6 @@ try {
     || !inventoryProjects.some((project) => project.key === 'research' && project.product === 'nano')) {
     throw new Error(`Aggregate Machine inventory did not include both AliceProjects: ${JSON.stringify(fleet)}`)
   }
-
-  console.log('[remote-ssh-smoke] repairing a legacy CLI Server with its managed Pi launcher missing')
-  run('ssh', [remoteTarget, 'rm -f "$HOME/.openalice/bin/pi" "$HOME/.openalice/bin/pi.cmd"'], { env: smokeEnv })
-  const repairedTunnelUrl = await attachAndProbe(remoteTarget, smokeEnv, ['--yes', '--no-open', '--wait', '30'])
-  if (repairedTunnelUrl !== firstTunnelUrl) {
-    throw new Error(`Managed Pi repair changed the remembered browser origin (${firstTunnelUrl} -> ${repairedTunnelUrl})`)
-  }
-  const repairedPiVersion = run('ssh', [remoteTarget, '"$HOME/.openalice/bin/pi" --version'], { env: smokeEnv }).trim()
-  if (repairedPiVersion !== '0.83.0') throw new Error(`Repaired managed Pi version mismatch: ${repairedPiVersion}`)
 
   console.log('[remote-ssh-smoke] checking reuse plan and reconnecting')
   const reusePlan = run(process.execPath, [
@@ -220,7 +209,7 @@ try {
     'set -eu',
     'test ! -e /home/smoke/.openalice-interrupted',
     'test -f /home/smoke/.openalice-transfer-remote-smoke-interrupted.staging/.openalice-transfer-transaction.json',
-    'node -e \'const fs=require("fs"); const v=JSON.parse(fs.readFileSync("/home/smoke/.openalice-transfer-remote-smoke-interrupted.staging/.openalice-transfer-transaction.json","utf8")); if(v.state!=="failed") process.exit(1)\'',
+    'grep -Eq \'"state"[[:space:]]*:[[:space:]]*"failed"\' /home/smoke/.openalice-transfer-remote-smoke-interrupted.staging/.openalice-transfer-transaction.json',
   ].join('; ')], { env: smokeEnv })
   const retried = sshWithInput(remoteTarget, smokeEnv, receiveCommand, interruptedStream)
   if (retried.status !== 0) throw new Error(`Interrupted transfer retry failed (${retried.status})`)
@@ -284,7 +273,7 @@ try {
     'test ! -e /home/smoke/.openalice-migrated/workspaces/state/resume-identities.json',
     'test ! -e /home/smoke/.openalice-migrated/data/config/ports.json',
     'test ! -e /home/smoke/.openalice-migrated/data/config/auth.json',
-    'node -e \'const fs=require("fs"); const v=JSON.parse(fs.readFileSync("/home/smoke/.openalice-migrated/data/config/ai-provider-manager.json","utf8")); if(v.credentials["openai-1"].apiKey!=="synthetic-ai-transfer-secret") process.exit(1)\'',
+    'grep -Fq synthetic-ai-transfer-secret /home/smoke/.openalice-migrated/data/config/ai-provider-manager.json',
   ].join('; ')], { env: smokeEnv })
   const remoteSealingKey = run('ssh', [remoteTarget, 'cat /home/smoke/.openalice-migrated/sealing.key'], { env: smokeEnv }).trim()
   const localSealingKey = (await import('node:fs/promises')).readFile(join(transferSource, 'sealing.key'), 'utf8')
@@ -294,11 +283,9 @@ try {
     || !migratedRegistry.projects?.some((project) => project.key === 'migrated')) {
     throw new Error(`Transferred AliceProject was not registered without changing the remote default: ${JSON.stringify(migratedRegistry)}`)
   }
-  const migratedWorkspaces = remoteJson(remoteTarget, smokeEnv,
-    'node -e \'const fs=require("fs"); process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync("/home/smoke/.openalice-migrated/workspaces/workspaces.json","utf8"))))\'')
-  if (migratedWorkspaces.workspaces?.[0]?.dir !== '/home/smoke/.openalice-migrated/workspaces/workspaces/ws-transfer') {
-    throw new Error(`Transferred Workspace paths were not rebased: ${JSON.stringify(migratedWorkspaces)}`)
-  }
+  run('ssh', [remoteTarget,
+    'grep -Fq /home/smoke/.openalice-migrated/workspaces/workspaces/ws-transfer /home/smoke/.openalice-migrated/workspaces/workspaces.json',
+  ], { env: smokeEnv })
   const sourceResearch = await (await import('node:fs/promises')).readFile(join(transferWorkspace, 'research.txt'), 'utf8')
   if (sourceResearch !== 'portable transfer research\n') throw new Error('Transfer changed the source Workspace')
   run('ssh', [remoteTarget,
@@ -381,10 +368,115 @@ async function prepareTransferSource(home) {
   }, null, 2)}\n`)
   await writeFile(join(home, 'workspaces', 'state', 'workspace-catalog.json'), `${JSON.stringify({
     version: 1,
-    workspaces: [{ id: 'ws-transfer', tag: 'Transfer', activeDir: workspace, lifecycle: 'active', updatedAt: '2026-08-23T00:00:00Z' }],
+    workspaces: [{
+      id: 'ws-transfer',
+      tag: 'Transfer',
+      activeDir: workspace,
+      createdAt: '2026-08-23T00:00:00Z',
+      lifecycle: 'active',
+      updatedAt: '2026-08-23T00:00:00Z',
+    }],
   }, null, 2)}\n`)
   await writeFile(join(home, 'workspaces', 'state', 'resume-identities.json'), '{"version":1,"records":{}}\n')
   return workspace
+}
+
+async function prepareLocalDevIdentityFixture(containerId, scratchRoot) {
+  const remoteArch = normalizeSmokeArchitecture(
+    run('docker', ['exec', containerId, 'uname', '-m']).trim(),
+  )
+  const remoteArchive = `/fixture/www/cli/dev/openalice-cli-dev-linux-${remoteArch}.tar.gz`
+  const remoteSha256 = run('docker', [
+    'exec', containerId, 'sh', '-c',
+    `awk 'NR == 1 { print $1 }' ${shellQuote(`${remoteArchive}.sha256`)}`,
+  ]).trim()
+  const metadata = JSON.parse(run('docker', [
+    'exec', containerId, 'sh', '-c',
+    `archive=${shellQuote(remoteArchive)}; root="$(tar -tzf "$archive" | sed -n '1{s#/.*##;p}')"; tar -xOzf "$archive" "$root/release.json"`,
+  ]))
+  if (
+    !/^[a-f0-9]{64}$/.test(remoteSha256)
+    || metadata?.platform !== 'linux'
+    || metadata?.arch !== remoteArch
+    || !/^[a-f0-9]{16}$/.test(metadata?.contentIdentity ?? '')
+    || typeof metadata?.version !== 'string'
+  ) {
+    throw new Error('Remote smoke artifact did not expose valid dev identity metadata')
+  }
+
+  const localPlatform = process.platform
+  const localArch = process.arch
+  if (!['darwin', 'linux'].includes(localPlatform) || !['arm64', 'x64'].includes(localArch)) {
+    throw new Error(`Remote smoke does not support local target ${localPlatform}-${localArch}`)
+  }
+  const remoteTarget = {
+    platform: 'linux',
+    arch: remoteArch,
+    archive: `openalice-cli-dev-linux-${remoteArch}.tar.gz`,
+    sha256: remoteSha256,
+    contentIdentity: metadata.contentIdentity,
+  }
+  const targetMatrix = [
+    ['darwin', 'arm64'],
+    ['darwin', 'x64'],
+    ['linux', 'arm64'],
+    ['linux', 'x64'],
+  ]
+  const targets = targetMatrix.map(([platform, arch], index) => {
+    if (platform === remoteTarget.platform && arch === remoteTarget.arch) return remoteTarget
+    const marker = (index + 4).toString(16)
+    return {
+      platform,
+      arch,
+      archive: `openalice-cli-dev-${platform}-${arch}.tar.gz`,
+      sha256: marker.repeat(64),
+      contentIdentity: marker.repeat(16),
+    }
+  })
+  const localTarget = targets.find((target) => (
+    target.platform === localPlatform && target.arch === localArch
+  ))
+  if (!localTarget) throw new Error(`Remote smoke did not synthesize local target ${localPlatform}-${localArch}`)
+  const manifest = {
+    schemaVersion: 1,
+    channel: 'dev',
+    repository: 'TraderAlice/OpenAlice',
+    version: metadata.version,
+    commit: run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim(),
+    installer: {
+      url: 'http://127.0.0.1:18080/install',
+      versionedUrl: 'http://127.0.0.1:18080/install',
+      sha256: '3'.repeat(64),
+    },
+    targets,
+  }
+  const installSourcePath = join(scratchRoot, 'local-dev-install-source.json')
+  await writeFile(installSourcePath, `${JSON.stringify({
+    schemaVersion: 3,
+    repository: 'TraderAlice/OpenAlice',
+    cliVersion: metadata.version,
+    selector: { kind: 'branch', value: 'dev' },
+    installerUrl: 'http://127.0.0.1:18080/install',
+    updateChannel: 'development',
+    method: 'direct',
+    artifact: {
+      platform: localTarget.platform,
+      arch: localTarget.arch,
+      sha256: localTarget.sha256,
+    },
+    installedAt: '2026-08-31T00:00:00.000Z',
+  }, null, 2)}\n`)
+  return {
+    OPENALICE_INSTALL_SOURCE: installSourcePath,
+    OPENALICE_CONTENT_IDENTITY: localTarget.contentIdentity,
+    OPENALICE_REMOTE_TEST_DEV_MANIFEST_URL: `data:application/json;base64,${Buffer.from(JSON.stringify(manifest)).toString('base64')}`,
+  }
+}
+
+function normalizeSmokeArchitecture(value) {
+  if (value === 'aarch64' || value === 'arm64') return 'arm64'
+  if (value === 'x86_64' || value === 'amd64') return 'x64'
+  throw new Error(`Remote smoke does not support Docker architecture ${value}`)
 }
 
 async function waitForSsh(target, env) {
@@ -432,7 +524,7 @@ async function attachAndProbe(target, env, remoteArgs) {
   }
   const response = await fetch(`${url}/api/auth/status`, { signal: AbortSignal.timeout(5_000) })
   const body = await response.json()
-  if (!response.ok || body.fixture !== 'remote-ssh-smoke') {
+  if (!response.ok || body.authed !== true || body.tokenConfigured !== true || body.passthrough !== 'localhost') {
     child.kill('SIGTERM')
     throw new Error(`Tunnel returned the wrong Runtime response: ${JSON.stringify(body)}`)
   }
