@@ -19,7 +19,7 @@ function makeGateway(overrides: Partial<FutuGateway> = {}): FutuGateway {
     stop: vi.fn(),
     getGlobalState: vi.fn(async () => OPEN_GLOBAL_STATE),
     getAccList: vi.fn(async () => [
-      { trdEnv: 0, accID: '11111', trdMarketAuthList: [1, 2] },
+      { trdEnv: 0, accID: '11111', trdMarketAuthList: [1, 2], simAccType: 1 },
       { trdEnv: 1, accID: '22222', trdMarketAuthList: [1, 2] },
     ]),
     getFunds: vi.fn(async () => null),
@@ -135,8 +135,8 @@ describe('FutuBroker.init', () => {
   it('honors an explicit accID', async () => {
     const gateway = makeGateway({
       getAccList: vi.fn(async () => [
-        { trdEnv: 0, accID: '11111', trdMarketAuthList: [1] },
-        { trdEnv: 0, accID: '33333', trdMarketAuthList: [1] },
+        { trdEnv: 0, accID: '11111', trdMarketAuthList: [1], simAccType: 1 },
+        { trdEnv: 0, accID: '33333', trdMarketAuthList: [1], simAccType: 1 },
       ]),
     })
     const broker = makeBroker(gateway, { accID: '33333' })
@@ -149,6 +149,31 @@ describe('FutuBroker.init', () => {
     const gateway = makeGateway({ getAccList: vi.fn(async () => [{ trdEnv: 1, accID: '22222', trdMarketAuthList: [2] }]) })
     const broker = makeBroker(gateway)
     await expect(broker.init()).rejects.toMatchObject({ name: 'BrokerError', code: 'CONFIG' })
+  })
+
+  it('ignores option-only paper accounts when selecting an equity account', async () => {
+    const gateway = makeGateway({
+      getAccList: vi.fn(async () => [
+        { trdEnv: 0, accID: 'option-only', trdMarketAuthList: [1], simAccType: 2 },
+        { trdEnv: 0, accID: 'stock', trdMarketAuthList: [1], simAccType: 1 },
+      ]),
+    })
+    const broker = makeBroker(gateway)
+    await broker.init()
+    await broker.getAccount()
+    expect(gateway.getFunds).toHaveBeenCalledWith(expect.objectContaining({ accID: 'stock' }))
+  })
+
+  it('requires accID when multiple stock paper accounts match', async () => {
+    const gateway = makeGateway({
+      getAccList: vi.fn(async () => [
+        { trdEnv: 0, accID: 'stock-cash', trdMarketAuthList: [1], simAccType: 1 },
+        { trdEnv: 0, accID: 'stock-margin', trdMarketAuthList: [1], simAccType: 4 },
+      ]),
+    })
+    const broker = makeBroker(gateway)
+    await expect(broker.init()).rejects.toMatchObject({ name: 'BrokerError', code: 'CONFIG' })
+    await expect(broker.init()).rejects.toThrow(/set accID explicitly/)
   })
 
   it('refuses with AUTH when FutuOpenD is not trade-logged-in', async () => {

@@ -53,6 +53,7 @@ import {
   FutuOrderStatus,
   FutuOrderType,
   FutuPositionSide,
+  FutuSimAccType,
   FutuTrdEnv,
   FutuTrdMarket,
   FutuTrdSide,
@@ -290,10 +291,18 @@ export class FutuBroker implements IBroker {
     const wantEnv = this.cfg.trdEnv === 'simulate' ? FutuTrdEnv.Simulate : FutuTrdEnv.Real
     const wantMarket = TRD_MARKET_BY_LABEL[this.cfg.trdMarket]
     const accounts = await this.gateway.getAccList()
-    const candidates = accounts.filter((a) => a.trdEnv === wantEnv && (a.trdMarketAuthList ?? []).includes(wantMarket))
+    const candidates = accounts.filter((a) => {
+      if (a.trdEnv !== wantEnv || !(a.trdMarketAuthList ?? []).includes(wantMarket)) return false
+      if (wantEnv === FutuTrdEnv.Real) return true
+      return a.simAccType === FutuSimAccType.Stock || a.simAccType === FutuSimAccType.StockAndOption
+    })
     const chosen = this.cfg.accID ? candidates.find((a) => String(a.accID) === this.cfg.accID) : candidates[0]
     if (!chosen) {
-      throw new BrokerError('CONFIG', `No Futu ${this.cfg.trdEnv} account with ${this.cfg.trdMarket} market access${this.cfg.accID ? ` and accID ${this.cfg.accID}` : ''} — check FutuOpenD login and config`)
+      const accountKind = wantEnv === FutuTrdEnv.Simulate ? ' stock paper account' : ' account'
+      throw new BrokerError('CONFIG', `No moomoo ${this.cfg.trdEnv}${accountKind} with ${this.cfg.trdMarket} market access${this.cfg.accID ? ` and accID ${this.cfg.accID}` : ''} — available markets and accounts are determined by the logged-in OpenD session`)
+    }
+    if (!this.cfg.accID && candidates.length > 1) {
+      throw new BrokerError('CONFIG', `Multiple moomoo ${this.cfg.trdEnv} stock accounts have ${this.cfg.trdMarket} market access (${candidates.map((a) => String(a.accID)).join(', ')}) — set accID explicitly instead of relying on account order`)
     }
     this.header = { trdEnv: wantEnv, accID: String(chosen.accID), trdMarket: wantMarket }
 

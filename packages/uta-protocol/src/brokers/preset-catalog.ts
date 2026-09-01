@@ -435,9 +435,9 @@ export const LONGBRIDGE_PRESET: BrokerPresetDef = {
 export const FUTU_PRESET: BrokerPresetDef = {
   id: 'futu',
   label: 'moomoo',
-  description: 'moomoo via a locally running FutuOpenD gateway — HK/US/CN/SG/JP equities, read-only positions/quotes plus order placement.',
+  description: 'moomoo equities through a locally running FutuOpenD gateway. Available markets and accounts come from the permissions reported by your logged-in OpenD session.',
   category: 'recommended',
-  hint: 'Requires FutuOpenD running and logged in with your moomoo account first — credentials live in FutuOpenD itself, not here. Default `websocket_port` is 33333 (FutuOpenD\'s own config). The trade password unlocks order placement for this OpenD session; leave it blank to unlock manually inside FutuOpenD/moomoo instead. Order writes are unverified against a real gateway in this codebase — start on Simulate before ever switching to Real.',
+  hint: 'Requires FutuOpenD running and logged in with your moomoo account first — credentials live in FutuOpenD itself, not here. Available markets and account types are determined by what OpenD reports; selecting a market here does not grant that permission. Simulate uses a stock paper account and virtual funds. Real-time quote access is separate and may require an entitlement or quotation card. Default `websocket_port` is 33333 (FutuOpenD\'s own config). A trade password is only relevant to Real accounts; leave it blank to unlock manually inside FutuOpenD/moomoo instead. Order writes are unverified against a real gateway in this codebase — start on Simulate before ever switching to Real.',
   defaultName: 'futu-main',
   badge: 'MO',
   badgeColor: 'text-primary',
@@ -449,12 +449,12 @@ export const FUTU_PRESET: BrokerPresetDef = {
   ],
   zodSchema: z.object({
     mode: z.enum(['simulate', 'real']).default('simulate').describe('Trade environment'),
-    trdMarket: z.enum(['HK', 'US', 'CN', 'SG', 'JP']).default('HK').describe('Trade market'),
+    trdMarket: z.enum(['HK', 'US', 'CN', 'SG', 'JP']).default('HK').describe('Requested trade market (must be reported as available by OpenD)'),
     host: z.string().default('127.0.0.1').describe('FutuOpenD host'),
     port: z.coerce.number().int().default(33333).describe('FutuOpenD websocket port'),
     ssl: z.boolean().default(false).describe('Use SSL'),
     wsKey: z.string().optional().describe('FutuOpenD websocket_key (if configured)'),
-    tradePassword: z.string().optional().describe('Trade unlock password (optional — leave blank to unlock manually in FutuOpenD)'),
+    tradePassword: z.string().optional().describe('Real-account trade unlock password (not used by paper trading; optional — leave blank to unlock manually in FutuOpenD)'),
     accID: z.string().optional().describe('Business account id (auto-detected if blank)'),
   }),
   subtitleFields: [

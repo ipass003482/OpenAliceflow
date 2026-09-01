@@ -23,6 +23,14 @@ export interface FutuSecurity {
 /** Trd_Common.TrdEnv */
 export const FutuTrdEnv = { Simulate: 0, Real: 1 } as const
 
+/** Trd_Common.SimAccType — paper accounts are separated by product family. */
+export const FutuSimAccType = {
+  Stock: 1,
+  Option: 2,
+  Futures: 3,
+  StockAndOption: 4,
+} as const
+
 /** Trd_Common.TrdMarket (subset used by this adapter). */
 export const FutuTrdMarket = { HK: 1, US: 2, CN: 3, SG: 6, JP: 15 } as const
 
