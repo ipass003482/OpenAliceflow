@@ -434,12 +434,12 @@ export const LONGBRIDGE_PRESET: BrokerPresetDef = {
 
 export const FUTU_PRESET: BrokerPresetDef = {
   id: 'futu',
-  label: 'Futu (富途)',
-  description: 'Futu (moomoo/富途) via a locally running FutuOpenD gateway — HK/US/CN/SG/JP equities, read-only positions/quotes plus order placement.',
+  label: 'moomoo',
+  description: 'moomoo via a locally running FutuOpenD gateway — HK/US/CN/SG/JP equities, read-only positions/quotes plus order placement.',
   category: 'recommended',
-  hint: 'Requires FutuOpenD running and logged in with your Futu account first — credentials live in FutuOpenD itself, not here. Default `websocket_port` is 33333 (FutuOpenD\'s own config). The trade password unlocks order placement for this OpenD session; leave it blank to unlock manually inside FutuOpenD/moomoo instead. Order writes are unverified against a real gateway in this codebase — start on Simulate before ever switching to Real.',
+  hint: 'Requires FutuOpenD running and logged in with your moomoo account first — credentials live in FutuOpenD itself, not here. Default `websocket_port` is 33333 (FutuOpenD\'s own config). The trade password unlocks order placement for this OpenD session; leave it blank to unlock manually inside FutuOpenD/moomoo instead. Order writes are unverified against a real gateway in this codebase — start on Simulate before ever switching to Real.',
   defaultName: 'futu-main',
-  badge: 'FT',
+  badge: 'MO',
   badgeColor: 'text-primary',
   engine: 'futu',
   guardCategory: 'securities',
@@ -458,7 +458,7 @@ export const FUTU_PRESET: BrokerPresetDef = {
     accID: z.string().optional().describe('Business account id (auto-detected if blank)'),
   }),
   subtitleFields: [
-    { field: 'mode', prefix: 'Futu · ' },
+    { field: 'mode', prefix: 'moomoo · ' },
     { field: 'trdMarket' },
   ],
   writeOnlyFields: ['wsKey', 'tradePassword'],
